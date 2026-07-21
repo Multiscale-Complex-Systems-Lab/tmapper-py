@@ -7,6 +7,7 @@ from scipy import stats
 
 from .labeling import find_node_label
 from .tcm_distance import tcm_distance
+from ._shortest_path import all_pairs_distance
 
 
 def _rescale(x, lo, hi):
@@ -206,7 +207,7 @@ def plot_tmgraph_tcm(g, x_label, t, nodemembers, **kwargs):
     )
 
     if bsinglemember:
-        D_geo = nx.floyd_warshall_numpy(g, nodelist=list(g.nodes()), weight=None)
+        D_geo = all_pairs_distance(g, list(g.nodes()), weight=None)
     else:
         D_geo = tcm_distance(g, nodemembers)
 

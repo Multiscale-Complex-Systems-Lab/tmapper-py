@@ -3,6 +3,8 @@
 import numpy as np
 import networkx as nx
 
+from ._shortest_path import all_pairs_distance
+
 
 def tcm_distance(g, nodet, weighted=False):
     """Compute a temporal connectivity matrix: for every pair of original
@@ -39,10 +41,7 @@ def tcm_distance(g, nodet, weighted=False):
     t_0 = all_t.min()
     Nt = all_t.max() - t_0 + 1
 
-    if weighted:
-        distmat = nx.floyd_warshall_numpy(g, nodelist=nodelist, weight="weight")
-    else:
-        distmat = nx.floyd_warshall_numpy(g, nodelist=nodelist, weight=None)
+    distmat = all_pairs_distance(g, nodelist, weight="weight" if weighted else None)
 
     tcm = np.full((Nt, Nt), np.nan)
 

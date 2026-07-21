@@ -3,6 +3,8 @@
 import numpy as np
 import networkx as nx
 
+from ._shortest_path import all_pairs_distance
+
 
 def filtergraph(g, d, *, reciprocal=True):
     """Contract a graph ``g`` into a simplified graph (a Mapper-style shape
@@ -50,7 +52,7 @@ def filtergraph(g, d, *, reciprocal=True):
     idx_of = {node: i for i, node in enumerate(nodelist)}
 
     A = nx.to_numpy_array(g, nodelist=nodelist)  # weighted adjacency (weight 1 if unweighted)
-    D = nx.floyd_warshall_numpy(g, nodelist=nodelist)  # geodesic distance, inf if unreachable
+    D = all_pairs_distance(g, nodelist)  # geodesic distance, inf if unreachable
 
     # -- connectivity within a distance threshold
     if reciprocal:
@@ -71,28 +73,33 @@ def filtergraph(g, d, *, reciprocal=True):
             idx_newnodes[i] = new_idx
     n_new = len(components)
 
+    # -- group original nodes by new-node label via a stable sort, so each
+    # group is a contiguous run. This lets the block min/mean below use
+    # ufunc.reduceat instead of an O(n_new^2) Python loop over Nn-sized
+    # boolean masks (the previous approach was O(n_new^2 * Nn) and became
+    # the dominant cost at realistic graph sizes).
+    order = np.argsort(idx_newnodes, kind="stable")
+    group_start = np.searchsorted(idx_newnodes[order], np.arange(n_new))
+    group_bounds = np.append(group_start, Nn)
+
     members = [
-        [nodelist[i] for i in range(Nn) if idx_newnodes[i] == n] for n in range(n_new)
+        [nodelist[i] for i in order[group_bounds[n]:group_bounds[n + 1]]]
+        for n in range(n_new)
     ]
     nodesize = np.array([len(m) for m in members])
 
+    D_sorted = D[np.ix_(order, order)]
+    A_sorted = A[np.ix_(order, order)]
+
     # -- define distance between new nodes: shortest path between member sets
-    D_simp = np.full((n_new, n_new), np.inf)
-    for n in range(n_new):
-        rows = idx_newnodes == n
-        for m in range(n_new):
-            cols = idx_newnodes == m
-            block = D[np.ix_(rows, cols)]
-            D_simp[n, m] = block.min()
+    D_row = np.minimum.reduceat(D_sorted, group_start, axis=0)
+    D_simp = np.minimum.reduceat(D_row, group_start, axis=1)
 
     # -- construct simplified graph: A_simp(n,m) = average connectivity between blocks
-    A_simp = np.zeros((n_new, n_new))
-    for n in range(n_new):
-        rows = idx_newnodes == n
-        for m in range(n_new):
-            cols = idx_newnodes == m
-            block = A[np.ix_(rows, cols)]
-            A_simp[n, m] = block.mean()
+    A_row_sum = np.add.reduceat(A_sorted, group_start, axis=0)
+    A_col_sum = np.add.reduceat(A_row_sum, group_start, axis=1)
+    group_sizes = np.diff(group_bounds)
+    A_simp = A_col_sum / np.outer(group_sizes, group_sizes)
 
     g_simp = nx.from_numpy_array(A_simp, create_using=nx.DiGraph)
     g_simp.remove_edges_from(nx.selfloop_edges(g_simp))  # OmitSelfLoops
