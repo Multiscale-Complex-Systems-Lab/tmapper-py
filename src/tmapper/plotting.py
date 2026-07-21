@@ -109,7 +109,21 @@ def plot_tmgraph(
     if ax is None:
         _, ax = plt.subplots()
 
-    pos = nx.spring_layout(g)  # closest networkx equivalent to MATLAB's force layout
+    # kamada_kawai minimizes graph-theoretic stress rather than running
+    # unbounded pairwise repulsion, so it stays compact without needing
+    # MATLAB's extra "gravity" term to keep loosely-connected nodes in.
+    # Falls back to spring_layout for disconnected graphs, which
+    # kamada_kawai_layout cannot handle.
+    if nx.is_directed(g):
+        connected = nx.is_weakly_connected(g)
+    else:
+        connected = nx.is_connected(g)
+    if connected and n_nodes > 1:
+        pos = nx.kamada_kawai_layout(g, weight=None)
+    else:
+        pos = nx.spring_layout(
+            g, weight=None, k=1.5 / np.sqrt(max(n_nodes, 1)), iterations=200, seed=0
+        )
     xs = np.array([pos[n][0] for n in nodelist])
     ys = np.array([pos[n][1] for n in nodelist])
 
@@ -178,11 +192,14 @@ def plot_tmgraph_tcm(g, x_label, t, nodemembers, **kwargs):
         The recurrence plot matrix.
     """
     import matplotlib.pyplot as plt
+    import matplotlib.dates as mdates
 
     nodesize = np.array([len(m) for m in nodemembers])
     bsinglemember = np.all(nodesize == 1)
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
+    # constrained_layout resolves spacing between subplots/colorbars
+    # automatically, avoiding overlap between cbar's label and ax2's ylabel.
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.5), constrained_layout=True)
 
     ax1, cbar, node_collection, scatter_collection = plot_tmgraph(
         g, x_label, nodemembers, ax=ax1, **kwargs
@@ -194,13 +211,27 @@ def plot_tmgraph_tcm(g, x_label, t, nodemembers, **kwargs):
         D_geo = tcm_distance(g, nodemembers)
 
     t = np.asarray(t)
+    is_datetime = np.issubdtype(t.dtype, np.datetime64)
+    t_num = mdates.date2num(t) if is_datetime else t.astype(float)
+
     im = ax2.imshow(
-        D_geo, cmap="hot", extent=[t.min(), t.max(), t.max(), t.min()], aspect="equal"
+        D_geo, cmap="hot",
+        extent=[t_num.min(), t_num.max(), t_num.max(), t_num.min()],
+        aspect="equal",
     )
     cbar2 = plt.colorbar(im, ax=ax2)
     cbar2.set_label("path length")
-    ax2.set_xlabel("time (s)")
-    ax2.set_ylabel("time (s)")
+
+    if is_datetime:
+        for axis in (ax2.xaxis, ax2.yaxis):
+            locator = mdates.AutoDateLocator()
+            axis.set_major_locator(locator)
+            axis.set_major_formatter(mdates.ConciseDateFormatter(locator))
+        ax2.set_xlabel("time")
+        ax2.set_ylabel("time")
+    else:
+        ax2.set_xlabel("time (s)")
+        ax2.set_ylabel("time (s)")
     ax2.set_title("geodesic recurrence plot")
 
     return ax1, ax2, cbar, cbar2, node_collection, scatter_collection, D_geo
