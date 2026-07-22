@@ -1,0 +1,97 @@
+# =============================================================================
+# mkdocs.yml — configuration for the tmapper (Python) documentation site.
+#
+# Mirrors the MATLAB toolbox's docs site (tmapper2) in theme and structure,
+# with an added API Reference page auto-generated from docstrings via
+# mkdocstrings.
+#
+# Preview locally:   mkdocs serve      (then open http://127.0.0.1:8000)
+# Build static site: mkdocs build      (outputs to ./site)
+# =============================================================================
+
+# --- Site identity ----------------------------------------------------------
+site_name: tmapper (Python)
+site_description: >-
+  Build attractor transition networks from time-series data — a Python port
+  of the Temporal Mapper 2 MATLAB toolbox.
+site_author: Mengsen Zhang
+
+# The public URL the site will live at once GitHub Pages is enabled.
+site_url: https://multiscale-complex-systems-lab.github.io/tmapper-py/
+
+# --- Link back to the source repository -------------------------------------
+repo_name: Multiscale-Complex-Systems-Lab/tmapper-py
+repo_url: https://github.com/Multiscale-Complex-Systems-Lab/tmapper-py
+edit_uri: edit/main/docs/
+
+# --- Theme -------------------------------------------------------------------
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: pink
+      accent: pink
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: pink
+      accent: pink
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.top
+    - toc.follow
+    - content.code.copy
+    - content.code.annotate
+    - search.suggest
+    - search.highlight
+  icon:
+    repo: fontawesome/brands/github
+
+# --- Markdown extensions -----------------------------------------------------
+markdown_extensions:
+  - admonition
+  - footnotes
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.blocks.caption
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+
+# --- Plugins -----------------------------------------------------------------
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            docstring_style: numpy
+            show_source: true
+            show_root_heading: true
+            merge_init_into_class: true
+            show_signature_annotations: true
+
+# --- Navigation (left sidebar) ----------------------------------------------
+nav:
+  - Home: index.md
+  - Installation: installation.md
+  - Quickstart: quickstart.md
+  - Concepts & coming from MATLAB: concepts.md
+  - API Reference: api.md

@@ -6,6 +6,8 @@ A Python port of [Temporal Mapper 2](https://github.com/Multiscale-Complex-Syste
 
 For the full background, citation, and the original MATLAB implementation, see [tmapper2](https://github.com/Multiscale-Complex-Systems-Lab/tmapper2).
 
+**Documentation, quickstart, and full API reference:** https://multiscale-complex-systems-lab.github.io/tmapper-py/
+
 ## What's included
 
 - **Core pipeline**: `tknndigraph`, `filtergraph`, `find_node_label`, `tcm_distance`, `plot_tmgraph`, `plot_tmgraph_tcm`

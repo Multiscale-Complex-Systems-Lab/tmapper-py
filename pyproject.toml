@@ -19,6 +19,7 @@ dependencies = [
 [project.optional-dependencies]
 plot = ["matplotlib>=3.7"]
 test = ["pytest>=7.0"]
+docs = ["mkdocs-material>=9.5", "mkdocstrings[python]>=0.25"]
 
 [project.urls]
 Homepage = "https://github.com/Multiscale-Complex-Systems-Lab/tmapper-py"
