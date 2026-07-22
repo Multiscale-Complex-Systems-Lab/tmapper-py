@@ -10,7 +10,7 @@ For the full background, citation, and the original MATLAB implementation, see [
 
 ## What's included
 
-- **Core pipeline**: `tknndigraph`, `filtergraph`, `find_node_label`, `tcm_distance`, `plot_tmgraph`, `plot_tmgraph_tcm`
+- **Core pipeline**: `tknndigraph`, `filtergraph`, `find_node_label`, `tcm_distance`, `plot_tmgraph`, `plot_tmgraph_tcm`, `plot_tmgraph_interactive` (draggable/zoomable/hoverable HTML via pyvis, no MATLAB equivalent)
 - **Standalone graph builders**: `knngraph`, `cknngraph`
 - **Graph/data utilities**: `node_size`, `node_measure`, `normalize_geodesic`, `normalize_tcm`, `members_to_tidx`, `subgraph_from_members`, `sym_dyn_to_digraph`, `digraph_to_graph`, `find_blocks`
 - **Cycle/path analysis toolkit**: `cycle_count` (Giscard/Kriege/Wilson combinatorial-sieve counter, third-party algorithm carrying its own BSD license -- see `cycle_count.py`), `cycle_count2p`, `reorg_cycles`, `cycle_path_overlap`, `cycle_cluster`, `cycle_cluster_conn`, `cycle_cutter`, `cycles_to_paths`, `cycle_path_decomp`, `path_traffic`, `qasym`, `cal_mod`

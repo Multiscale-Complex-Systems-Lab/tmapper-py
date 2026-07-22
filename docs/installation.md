@@ -8,7 +8,8 @@ tmapper is not yet published to PyPI, so install it directly from GitHub.
 | --- | --- |
 | **Python** | 3.10 or newer |
 | **numpy, scipy, networkx** | installed automatically as dependencies |
-| **matplotlib** | optional, needed for `plot_tmgraph` / `plot_tmgraph_tcm` (the `[plot]` extra) |
+| **matplotlib, python-igraph** | optional, needed for `plot_tmgraph` / `plot_tmgraph_tcm` (the `[plot]` extra) — igraph provides the DrL layout algorithm |
+| **pyvis** | optional, needed only for `plot_tmgraph_interactive` (also in the `[plot]` extra) |
 
 ## Get the code
 

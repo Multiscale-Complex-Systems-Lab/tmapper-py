@@ -201,6 +201,33 @@ See [Concepts & coming from MATLAB](concepts.md) for the deeper theory behind
 this, and the original [MATLAB toolbox's docs](https://multiscale-complex-systems-lab.github.io/tmapper2/concepts/)
 for the full conceptual write-up.
 
+## Step 7 — Explore interactively (optional)
+
+For a denser network than this demo's, a static image can be hard to read —
+`plot_tmgraph_interactive` renders the same network as a draggable, zoomable,
+hoverable standalone HTML page instead, using the same layout, sizing, and
+coloring as `plot_tmgraph`:
+
+```python
+from tmapper import plot_tmgraph_interactive
+
+plot_tmgraph_interactive(
+    g_simp, colorvar, members,
+    colorlabel=colorvarname,
+    labelmethod="median",
+    nodesizemode="log",
+    title=f"sample data | k={k}, d={d}, tx={texclude}",
+    output_path="tmgraph.html",
+)
+```
+
+Open `tmgraph.html` in a browser: drag nodes around, zoom/pan, and hover over
+a node to see its member count and color value. Physics is off by default, so
+nodes stay exactly where the layout put them (but see
+[the API reference](api.md#tmapper.plot_tmgraph_interactive) if you want to
+enable physics simulation yourself via `net.set_options(...)` on the returned
+`pyvis.network.Network`).
+
 ## What's next
 
 - Try changing **`k`** and **`d`** and watch how the network coarsens or

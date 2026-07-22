@@ -46,6 +46,50 @@ def _expand_center(pos, gamma):
     return out
 
 
+def _prepare_node_size(nodemembers, nodesizerange, nodesizemode):
+    """Shared node-size computation for :func:`plot_tmgraph` and
+    :func:`plot_tmgraph_interactive`: member count -> optional
+    rank/log transform -> rescaled to ``nodesizerange``."""
+    n_nodes = len(nodemembers)
+    nodesize = np.array([len(m) for m in nodemembers], dtype=float)
+    buniform = len(set(nodesize.tolist())) == 1
+    if not buniform:
+        if nodesizemode == "rank":
+            nodesize = stats.rankdata(nodesize, method="average")
+        elif nodesizemode == "log":
+            nodesize = np.log10(nodesize)
+        # 'original' (or anything else): leave nodesize as-is, matching
+        # MATLAB's switch with no matching/default case
+        nodesize = _rescale(nodesize, nodesizerange[0], nodesizerange[1])
+    else:
+        span = nodesizerange[1] - nodesizerange[0]
+        nodesize = np.full(n_nodes, nodesizerange[0] + span / n_nodes)
+    return nodesize
+
+
+def _compute_layout(g, nodelist, center_expand):
+    """Shared layout computation for :func:`plot_tmgraph` and
+    :func:`plot_tmgraph_interactive`: igraph's DrL layout (falls back to
+    spring_layout for the trivial 1-node case), normalized to the unit
+    circle and optionally de-clumped. See :func:`_expand_center`."""
+    n_nodes = len(nodelist)
+    if n_nodes > 1:
+        import igraph as ig
+
+        idx_of = {node: i for i, node in enumerate(nodelist)}
+        edges = [(idx_of[u], idx_of[v]) for u, v in g.edges()]
+        g_ig = ig.Graph(n=n_nodes, edges=edges, directed=g.is_directed())
+        coords = np.array(g_ig.layout_drl().coords)
+        pos = {nodelist[i]: coords[i] for i in range(n_nodes)}
+    else:
+        pos = nx.spring_layout(g, weight=None, seed=0)
+
+    pos = _normalize_positions(pos)
+    if center_expand:
+        pos = _expand_center(pos, center_expand)
+    return pos
+
+
 def plot_tmgraph(
     g,
     x_label=None,
@@ -125,46 +169,15 @@ def plot_tmgraph(
     if nodeclim is None:
         nodeclim = (float(np.min(x_label)), float(np.max(x_label)))
 
-    # -- define node size
-    nodesize = np.array([len(m) for m in nodemembers], dtype=float)
-    buniform = len(set(nodesize.tolist())) == 1
-    if not buniform:
-        if nodesizemode == "rank":
-            nodesize = stats.rankdata(nodesize, method="average")
-        elif nodesizemode == "log":
-            nodesize = np.log10(nodesize)
-        # 'original' (or anything else): leave nodesize as-is, matching
-        # MATLAB's switch with no matching/default case
-        nodesize = _rescale(nodesize, nodesizerange[0], nodesizerange[1])
-    else:
-        span = nodesizerange[1] - nodesizerange[0]
-        nodesize = np.full(n_nodes, nodesizerange[0] + span / n_nodes)
-
-    # -- define node labels/colors
+    # -- define node size and labels/colors
+    nodesize = _prepare_node_size(nodemembers, nodesizerange, nodesizemode)
     nodelabel = find_node_label(nodemembers, x_label, labelmethod=labelmethod)
 
     # -- plotting
     if ax is None:
         _, ax = plt.subplots()
 
-    # igraph's DrL layout (designed for exactly this scale of large,
-    # dense graph) separates clustered regions far more cleanly than
-    # networkx's spring_layout/ForceAtlas2 in practice; falls back to
-    # spring_layout for the trivial 1-node case.
-    if n_nodes > 1:
-        import igraph as ig
-
-        idx_of = {node: i for i, node in enumerate(nodelist)}
-        edges = [(idx_of[u], idx_of[v]) for u, v in g.edges()]
-        g_ig = ig.Graph(n=n_nodes, edges=edges, directed=g.is_directed())
-        coords = np.array(g_ig.layout_drl().coords)
-        pos = {nodelist[i]: coords[i] for i in range(n_nodes)}
-    else:
-        pos = nx.spring_layout(g, weight=None, seed=0)
-
-    pos = _normalize_positions(pos)
-    if center_expand:
-        pos = _expand_center(pos, center_expand)
+    pos = _compute_layout(g, nodelist, center_expand)
 
     xs = np.array([pos[n][0] for n in nodelist])
     ys = np.array([pos[n][1] for n in nodelist])
@@ -209,6 +222,158 @@ def plot_tmgraph(
         )
 
     return ax, cbar, node_collection, scatter_collection
+
+
+def plot_tmgraph_interactive(
+    g,
+    x_label=None,
+    nodemembers=None,
+    *,
+    nodesizerange=(6, 40),
+    nodesizemode="log",
+    colorlabel="x_label",
+    cmap="jet",
+    labelmethod="mode",
+    nodeclim=None,
+    center_expand=4.0,
+    title="",
+    output_path="tmgraph.html",
+):
+    """Plot a temporal mapper graph as a draggable/zoomable/hoverable
+    standalone HTML page (via pyvis/vis.js), instead of a static image.
+
+    Uses the same layout, node-size, and coloring logic as
+    :func:`plot_tmgraph` (so the two should look like the same network),
+    with physics disabled -- nodes stay exactly where the layout put
+    them, but can still be dragged, and hovering shows each node's size
+    and color-label value.
+
+    Parameters
+    ----------
+    g : networkx.Graph or networkx.DiGraph
+        The graph to plot.
+    x_label : array_like, optional
+        See :func:`plot_tmgraph`.
+    nodemembers : sequence of sequence of int, optional
+        See :func:`plot_tmgraph`.
+    nodesizerange : (float, float), default (6, 40)
+        (min, max) node radius in pixels (pyvis/vis.js sizes nodes by
+        radius, unlike matplotlib's area-based marker size -- so this
+        default is not directly comparable to :func:`plot_tmgraph`'s).
+    nodesizemode : {'log', 'rank', 'original'}, default 'log'
+        See :func:`plot_tmgraph`.
+    colorlabel : str, default 'x_label'
+        Legend label (rendered as a small embedded colorbar image).
+    cmap : str or matplotlib.colors.Colormap, default 'jet'
+        Colormap for node coloring -- anything matplotlib accepts,
+        including a discrete :class:`~matplotlib.colors.ListedColormap`
+        for categorical labels.
+    labelmethod : {'mode', 'mean', 'median', 'none'} or callable, default 'mode'
+        See :func:`tmapper.labeling.find_node_label`.
+    nodeclim : (float, float), optional
+        Color axis limits. Defaults to (min(x_label), max(x_label)).
+    center_expand : float, default 4.0
+        See :func:`plot_tmgraph`.
+    title : str, default ''
+        Page heading (e.g. summarize the construction parameters here).
+    output_path : str, default 'tmgraph.html'
+        Where to write the standalone HTML file.
+
+    Returns
+    -------
+    pyvis.network.Network
+        The populated network (already written to ``output_path``).
+    """
+    import base64
+    from io import BytesIO
+
+    import matplotlib.pyplot as plt
+    import matplotlib.colors as mcolors
+    from pyvis.network import Network
+
+    nodelist = list(g.nodes())
+    n_nodes = len(nodelist)
+
+    if nodemembers is None:
+        nodemembers = [[i] for i in range(n_nodes)]
+
+    if x_label is None:
+        all_members = sorted({m for members in nodemembers for m in members})
+        x_label = np.ones(len(all_members))
+    x_label = np.asarray(x_label, dtype=float)
+
+    if nodeclim is None:
+        nodeclim = (float(np.min(x_label)), float(np.max(x_label)))
+
+    nodesize = _prepare_node_size(nodemembers, nodesizerange, nodesizemode)
+    nodelabel = find_node_label(nodemembers, x_label, labelmethod=labelmethod)
+    pos = _compute_layout(g, nodelist, center_expand)
+
+    # -- per-node hex colors via matplotlib's colormap machinery, so this
+    # accepts the exact same `cmap`/`nodeclim` (continuous or discrete)
+    # as plot_tmgraph.
+    cmap_obj = plt.get_cmap(cmap) if isinstance(cmap, str) else cmap
+    vmin, vmax = nodeclim if nodeclim[1] != nodeclim[0] else (nodeclim[0] - 0.5, nodeclim[0] + 0.5)
+    norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
+    node_colors_hex = [mcolors.to_hex(cmap_obj(norm(v))) for v in nodelabel]
+
+    net = Network(
+        height="900px", width="100%", directed=g.is_directed(), bgcolor="#ffffff",
+        cdn_resources="in_line", notebook=False, heading=title,
+    )
+    net.set_options('{"physics": {"enabled": false}}')
+
+    SCALE = 800  # pyvis coordinates are pixels; our layout is normalized to roughly [-1.x, 1.x]
+    order = np.argsort(nodesize, kind="stable")[::-1]  # largest first, smallest added last (drawn on top)
+    for i in order:
+        i = int(i)
+        n = nodelist[i]
+        x, y = pos[n]
+        net.add_node(
+            i,
+            label="",
+            title=f"node {n} | members={int(len(nodemembers[i]))} | {colorlabel}={nodelabel[i]:.3g}",
+            x=float(x * SCALE), y=float(-y * SCALE),  # flip y: vis.js y-axis points down
+            size=float(nodesize[i]), color=node_colors_hex[i], physics=False,
+        )
+    idx_of = {n: i for i, n in enumerate(nodelist)}
+    edge_kwargs = {"arrows": "to"} if g.is_directed() else {}
+    for u, v in g.edges():
+        net.add_edge(idx_of[u], idx_of[v], color="#bbbbbb", width=1, **edge_kwargs)
+
+    html = net.generate_html(notebook=False)
+
+    # pyvis's own template renders "<h1>{{heading}}</h1>" twice
+    # unconditionally -- drop the second copy.
+    if title:
+        heading_block = f"<h1>{title}</h1>"
+        first = html.find(heading_block)
+        second = html.find(heading_block, first + 1)
+        if second != -1:
+            html = html[:second] + html[second + len(heading_block):]
+
+    # -- embed a small matplotlib colorbar as the legend, reusing the
+    # exact cmap/norm above so it always matches the node colors.
+    fig_cb, ax_cb = plt.subplots(figsize=(4, 0.5))
+    cbar = fig_cb.colorbar(
+        plt.cm.ScalarMappable(cmap=cmap_obj, norm=norm), cax=ax_cb, orientation="horizontal"
+    )
+    cbar.set_label(colorlabel)
+    buf = BytesIO()
+    fig_cb.savefig(buf, format="png", dpi=130, bbox_inches="tight", transparent=True)
+    plt.close(fig_cb)
+    legend_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    legend_html = (
+        f'<div style="text-align:center;">'
+        f'<img src="data:image/png;base64,{legend_b64}"></div>'
+    )
+    anchor = "</h1>" if title else "<body>"
+    html = html.replace(anchor, anchor + "\n" + legend_html, 1)
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(html)
+
+    return net
 
 
 def plot_tmgraph_tcm(g, x_label, t, nodemembers, **kwargs):

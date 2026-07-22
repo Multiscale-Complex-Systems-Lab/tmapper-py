@@ -53,6 +53,10 @@ A secondary toolkit (cycle counting/clustering, path decomposition,
 modularity) is also included for probing the topology of the resulting
 network — see the [API Reference](api.md).
 
+Besides the static `plot_tmgraph`/`plot_tmgraph_tcm` figures, dense networks
+can also be explored as a draggable/zoomable/hoverable HTML page via
+`plot_tmgraph_interactive` — see the [Quickstart](quickstart.md#step-7-explore-interactively-optional).
+
 ## Where to go next
 
 - **[Installation](installation.md)** — install the package and check dependencies.

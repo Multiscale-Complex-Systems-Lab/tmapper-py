@@ -10,7 +10,10 @@ import numpy as np
 import pytest
 import networkx as nx
 
-from tmapper import tknndigraph, filtergraph, find_node_label, tcm_distance, plot_tmgraph, plot_tmgraph_tcm
+from tmapper import (
+    tknndigraph, filtergraph, find_node_label, tcm_distance,
+    plot_tmgraph, plot_tmgraph_tcm, plot_tmgraph_interactive,
+)
 
 
 def test_find_node_label_all_methods():
@@ -133,3 +136,28 @@ def test_plot_tmgraph_clim_edge_case():
     ax, cbar, nc, _ = plot_tmgraph(g3, x_label_const, members)
     assert ax is not None and cbar is not None
     matplotlib.pyplot.close("all")
+
+
+def test_plot_tmgraph_interactive_writes_html(tmp_path):
+    g3 = nx.DiGraph()
+    g3.add_nodes_from(range(3))
+    g3.add_edges_from([(0, 1), (1, 2), (2, 0)])
+    members = [[0], [1, 2], list(range(3, 13))]
+    x_label = np.ones(13)
+    out = tmp_path / "network.html"
+
+    net = plot_tmgraph_interactive(
+        g3, x_label, members, title="unit test network", output_path=str(out)
+    )
+
+    assert out.exists()
+    html = out.read_text(encoding="utf-8")
+    # heading appears exactly once (pyvis's own template duplicates it
+    # unconditionally; we strip the second copy)
+    assert html.count("<h1>unit test network</h1>") == 1
+    # a legend image was embedded
+    assert "data:image/png;base64," in html
+    # physics disabled, so the network stays exactly where the layout put it
+    assert '"physics": {"enabled": false}' in html or '"enabled": false' in html
+    assert len(net.nodes) == 3
+    assert len(net.edges) == 3

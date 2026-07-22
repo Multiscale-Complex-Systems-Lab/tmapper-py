@@ -12,6 +12,7 @@ mapping.
 ::: tmapper.tcm_distance
 ::: tmapper.plot_tmgraph
 ::: tmapper.plot_tmgraph_tcm
+::: tmapper.plot_tmgraph_interactive
 
 ## Standalone graph builders
 

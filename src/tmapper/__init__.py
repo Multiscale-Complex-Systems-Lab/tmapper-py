@@ -2,7 +2,7 @@ from .tknndigraph import tknndigraph
 from .filtergraph import filtergraph
 from .labeling import find_node_label
 from .tcm_distance import tcm_distance
-from .plotting import plot_tmgraph, plot_tmgraph_tcm
+from .plotting import plot_tmgraph, plot_tmgraph_tcm, plot_tmgraph_interactive
 from .knngraph import knngraph
 from .cknngraph import cknngraph
 from .cycle_count import cycle_count
@@ -34,6 +34,7 @@ __all__ = [
     "tcm_distance",
     "plot_tmgraph",
     "plot_tmgraph_tcm",
+    "plot_tmgraph_interactive",
     "knngraph",
     "cknngraph",
     "cycle_count",

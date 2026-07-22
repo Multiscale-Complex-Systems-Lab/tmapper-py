@@ -65,11 +65,23 @@ translation isn't quite 1:1.
     floating-point precision on the sample dataset.
 
 !!! note "Network layout"
-    `plot_tmgraph` lays out the network with networkx's `kamada_kawai_layout`
-    (falling back to `spring_layout` for disconnected graphs), rather than
-    MATLAB's gravity-assisted force layout. Both are force/stress-based and
-    produce visually similar (and topologically equivalent) layouts, but node
-    *positions* will not match pixel-for-pixel between the two toolboxes.
+    `plot_tmgraph` lays out the network with igraph's DrL layout (falling
+    back to `spring_layout` for the trivial 1-node case), rather than
+    MATLAB's gravity-assisted force layout. DrL is purpose-built for large,
+    dense graphs and in practice separates clustered regions considerably
+    more cleanly than networkx's own layout algorithms (`spring_layout`,
+    `kamada_kawai_layout`, ForceAtlas2 via `forceatlas2_layout` were all
+    tried and found to sprawl or blur clusters together at this scale).
+    Node *positions* will not match pixel-for-pixel between the two
+    toolboxes, but the topology they reveal should agree.
+
+!!! note "Interactive visualization (Python-only)"
+    `plot_tmgraph_interactive` has no MATLAB equivalent: it renders the same
+    network (same layout, node sizing, and coloring as `plot_tmgraph`) as a
+    draggable/zoomable/hoverable standalone HTML page via
+    [pyvis](https://pyvis.readthedocs.io/)/vis.js, instead of a static image.
+    Useful for exploring a dense network before committing to a static
+    figure for a paper.
 
 !!! note "Skipped MATLAB-object shims"
     `weightedAdj.m`, `zerodiag.m`, and `toVec.m` have no standalone Python
