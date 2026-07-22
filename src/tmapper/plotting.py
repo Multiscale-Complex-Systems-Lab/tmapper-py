@@ -17,6 +17,35 @@ def _rescale(x, lo, hi):
     return lo + (x - xmin) / (xmax - xmin) * (hi - lo)
 
 
+def _normalize_positions(pos):
+    """Rescale a layout so the farthest node sits at radius 1."""
+    pts = np.array(list(pos.values()))
+    max_r = np.max(np.linalg.norm(pts, axis=1))
+    scale = 1.0 / max_r if max_r > 0 else 1.0
+    return {n: xy * scale for n, xy in pos.items()}
+
+
+def _expand_center(pos, gamma):
+    """Log-radial de-clumping: remap each node's radius r -> log1p(gamma*r).
+
+    Force-directed layouts (spring/ForceAtlas2) tend to pack the bulk of
+    nodes into a dense central clump with only a few outliers stretching
+    the frame. Since log1p(gamma*r)/r is largest at small r and flattens
+    out at large r, this pushes the dense core outward proportionally
+    more than the already-spread-out periphery, without disturbing
+    angular position or relative radial order.
+    """
+    out = {}
+    for n, xy in pos.items():
+        r = np.linalg.norm(xy)
+        if r > 0:
+            rn = np.log1p(gamma * r)
+            out[n] = xy * (rn / r)
+        else:
+            out[n] = xy
+    return out
+
+
 def plot_tmgraph(
     g,
     x_label=None,
@@ -30,6 +59,7 @@ def plot_tmgraph(
     labelmethod="mode",
     nodeclim=None,
     nodescatter=False,
+    center_expand=4.0,
 ):
     """Plot a temporal mapper graph (without a recurrence plot).
 
@@ -62,13 +92,20 @@ def plot_tmgraph(
         Color axis limits. Defaults to (min(x_label), max(x_label)).
     nodescatter : bool, default False
         Whether to overlay a scatter plot on top of the graph nodes.
+    center_expand : float, default 4.0
+        Log-radial de-clumping strength applied to the layout after
+        normalizing it to the unit circle (0 disables it). Force-directed
+        layouts tend to pack most nodes into a dense central clump with a
+        few outliers stretching the frame; this spreads the dense core
+        outward without disturbing the outer structure. See
+        :func:`_expand_center`.
 
     Returns
     -------
     ax : matplotlib.axes.Axes
     cbar : matplotlib.colorbar.Colorbar
     node_collection : matplotlib.collections.PathCollection
-        The drawn graph nodes (from networkx's draw_networkx_nodes).
+        The drawn graph nodes.
     scatter_collection : matplotlib.collections.PathCollection or None
         The scatter overlay, if ``nodescatter`` is True.
     """
@@ -110,31 +147,40 @@ def plot_tmgraph(
     if ax is None:
         _, ax = plt.subplots()
 
-    # kamada_kawai minimizes graph-theoretic stress rather than running
-    # unbounded pairwise repulsion, so it stays compact without needing
-    # MATLAB's extra "gravity" term to keep loosely-connected nodes in.
-    # Falls back to spring_layout for disconnected graphs, which
-    # kamada_kawai_layout cannot handle.
-    if nx.is_directed(g):
-        connected = nx.is_weakly_connected(g)
-    else:
-        connected = nx.is_connected(g)
-    if connected and n_nodes > 1:
-        pos = nx.kamada_kawai_layout(g, weight=None)
-    else:
+    # Plain spring_layout on the undirected graph, matching the recipe
+    # from Gary Bente's independent Python reimplementation: fixed seed,
+    # generous iterations, and an optimal-distance k scaled to graph size.
+    if n_nodes > 1:
+        g_undirected = g.to_undirected() if g.is_directed() else g
         pos = nx.spring_layout(
-            g, weight=None, k=1.5 / np.sqrt(max(n_nodes, 1)), iterations=200, seed=0
+            g_undirected, seed=42, iterations=200, k=1 / np.sqrt(n_nodes + 1)
         )
+    else:
+        pos = nx.spring_layout(g, weight=None, seed=0)
+
+    pos = _normalize_positions(pos)
+    if center_expand:
+        pos = _expand_center(pos, center_expand)
+
     xs = np.array([pos[n][0] for n in nodelist])
     ys = np.array([pos[n][1] for n in nodelist])
 
-    nx.draw_networkx_edges(g, pos, ax=ax, alpha=0.3, edge_color="k",
-                            arrowsize=5, nodelist=nodelist)
-    node_collection = nx.draw_networkx_nodes(
-        g, pos, ax=ax, nodelist=nodelist,
-        node_size=(nodesize ** 2), node_color=nodelabel, cmap=cmap,
+    # Edges thin/light/behind (zorder=1) so they recede rather than
+    # smudging together; nodes outlined and drawn in front (zorder=3) so
+    # they stay crisp regardless of edge clutter underneath.
+    edge_collection = nx.draw_networkx_edges(
+        g, pos, ax=ax, alpha=0.4, edge_color="darkgray", width=0.6,
+        arrowsize=5, nodelist=nodelist,
+    )
+    for obj in (edge_collection if isinstance(edge_collection, list) else [edge_collection]):
+        if obj is not None:
+            obj.set_zorder(1)
+
+    node_collection = ax.scatter(
+        xs, ys, s=(nodesize ** 2), c=nodelabel, cmap=cmap,
         vmin=nodeclim[0] if nodeclim[1] != nodeclim[0] else None,
         vmax=nodeclim[1] if nodeclim[1] != nodeclim[0] else None,
+        edgecolors="black", linewidths=0.5, zorder=3,
     )
     ax.set_aspect("equal")
     ax.axis("off")
@@ -218,7 +264,7 @@ def plot_tmgraph_tcm(g, x_label, t, nodemembers, **kwargs):
     im = ax2.imshow(
         D_geo, cmap="hot",
         extent=[t_num.min(), t_num.max(), t_num.max(), t_num.min()],
-        aspect="equal",
+        aspect="equal", interpolation="nearest",  # matches MATLAB's imagesc (flat, unsmoothed cells)
     )
     cbar2 = plt.colorbar(im, ax=ax2)
     cbar2.set_label("path length")
