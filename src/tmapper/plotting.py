@@ -147,14 +147,18 @@ def plot_tmgraph(
     if ax is None:
         _, ax = plt.subplots()
 
-    # Plain spring_layout on the undirected graph, matching the recipe
-    # from Gary Bente's independent Python reimplementation: fixed seed,
-    # generous iterations, and an optimal-distance k scaled to graph size.
+    # igraph's DrL layout (designed for exactly this scale of large,
+    # dense graph) separates clustered regions far more cleanly than
+    # networkx's spring_layout/ForceAtlas2 in practice; falls back to
+    # spring_layout for the trivial 1-node case.
     if n_nodes > 1:
-        g_undirected = g.to_undirected() if g.is_directed() else g
-        pos = nx.spring_layout(
-            g_undirected, seed=42, iterations=200, k=1 / np.sqrt(n_nodes + 1)
-        )
+        import igraph as ig
+
+        idx_of = {node: i for i, node in enumerate(nodelist)}
+        edges = [(idx_of[u], idx_of[v]) for u, v in g.edges()]
+        g_ig = ig.Graph(n=n_nodes, edges=edges, directed=g.is_directed())
+        coords = np.array(g_ig.layout_drl().coords)
+        pos = {nodelist[i]: coords[i] for i in range(n_nodes)}
     else:
         pos = nx.spring_layout(g, weight=None, seed=0)
 
@@ -165,19 +169,20 @@ def plot_tmgraph(
     xs = np.array([pos[n][0] for n in nodelist])
     ys = np.array([pos[n][1] for n in nodelist])
 
-    # Edges thin/light/behind (zorder=1) so they recede rather than
-    # smudging together; nodes outlined and drawn in front (zorder=3) so
-    # they stay crisp regardless of edge clutter underneath.
+    # Edges visible but behind (zorder=1); nodes outlined and drawn in
+    # front (zorder=3), smallest last, so small nodes aren't buried
+    # under large ones and stay crisp regardless of edge clutter.
     edge_collection = nx.draw_networkx_edges(
-        g, pos, ax=ax, alpha=0.4, edge_color="darkgray", width=0.6,
-        arrowsize=5, nodelist=nodelist,
+        g, pos, ax=ax, alpha=0.6, edge_color="#888888", width=0.8,
+        arrowsize=6, nodelist=nodelist,
     )
     for obj in (edge_collection if isinstance(edge_collection, list) else [edge_collection]):
         if obj is not None:
             obj.set_zorder(1)
 
+    order = np.argsort(nodesize, kind="stable")[::-1]  # largest first, smallest drawn last (on top)
     node_collection = ax.scatter(
-        xs, ys, s=(nodesize ** 2), c=nodelabel, cmap=cmap,
+        xs[order], ys[order], s=(nodesize[order] ** 2), c=nodelabel[order], cmap=cmap,
         vmin=nodeclim[0] if nodeclim[1] != nodeclim[0] else None,
         vmax=nodeclim[1] if nodeclim[1] != nodeclim[0] else None,
         edgecolors="black", linewidths=0.5, zorder=3,

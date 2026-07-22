@@ -32,20 +32,22 @@ def test_find_node_label_all_methods():
 
 def test_plot_tmgraph_nodesizemode():
     # sizes [1,2,10] (not evenly spaced, not geometric) so rank/log/original
-    # genuinely disagree.
+    # genuinely disagree. plot_tmgraph draws largest-to-smallest (so small
+    # nodes render on top, unburied), so get_sizes() comes back in
+    # descending order rather than node order.
     g3 = nx.DiGraph()
     g3.add_nodes_from(range(3))
     members = [[0], [1, 2], list(range(3, 13))]  # sizes 1, 2, 10
     x_label = np.ones(13)
 
     _, _, nc_rank, _ = plot_tmgraph(g3, x_label, members, nodesizemode="rank")
-    assert np.allclose(np.sqrt(nc_rank.get_sizes()), [1, 5.5, 10], atol=1e-9)
+    assert np.allclose(np.sqrt(nc_rank.get_sizes()), [10, 5.5, 1], atol=1e-9)
 
     _, _, nc_log, _ = plot_tmgraph(g3, x_label, members, nodesizemode="log")
-    assert np.allclose(np.sqrt(nc_log.get_sizes()), [1, 3.709, 10], atol=1e-3)
+    assert np.allclose(np.sqrt(nc_log.get_sizes()), [10, 3.709, 1], atol=1e-3)
 
     _, _, nc_orig, _ = plot_tmgraph(g3, x_label, members, nodesizemode="original")
-    assert np.allclose(np.sqrt(nc_orig.get_sizes()), [1, 2, 10], atol=1e-9)
+    assert np.allclose(np.sqrt(nc_orig.get_sizes()), [10, 2, 1], atol=1e-9)
     matplotlib.pyplot.close("all")
 
 

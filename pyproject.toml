@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-plot = ["matplotlib>=3.7"]
+plot = ["matplotlib>=3.7", "python-igraph>=1.0"]
 test = ["pytest>=7.0"]
 docs = ["mkdocs-material>=9.5", "mkdocstrings[python]>=0.25"]
 
