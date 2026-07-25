@@ -237,7 +237,7 @@ def plot_tmgraph_interactive(
     nodeclim=None,
     center_expand=4.0,
     title="",
-    output_path="tmgraph.html",
+    output_path=None,
 ):
     """Plot a temporal mapper graph as a draggable/zoomable/hoverable
     standalone HTML page (via pyvis/vis.js), instead of a static image.
@@ -276,13 +276,21 @@ def plot_tmgraph_interactive(
         See :func:`plot_tmgraph`.
     title : str, default ''
         Page heading (e.g. summarize the construction parameters here).
-    output_path : str, default 'tmgraph.html'
-        Where to write the standalone HTML file.
+    output_path : str, optional
+        If given, also write the standalone HTML page to this path.
+        Default None -- no file is written; use the returned ``html``
+        string instead (e.g. pass it directly to
+        ``streamlit.components.v1.html(html, height=900)`` rather than
+        writing to disk and reading it back).
 
     Returns
     -------
-    pyvis.network.Network
-        The populated network (already written to ``output_path``).
+    net : pyvis.network.Network
+        The populated network.
+    html : str
+        The standalone HTML page as a string (already includes the
+        embedded colorbar legend) -- identical to what gets written to
+        ``output_path`` when one is given.
     """
     import base64
     from io import BytesIO
@@ -370,10 +378,11 @@ def plot_tmgraph_interactive(
     anchor = "</h1>" if title else "<body>"
     html = html.replace(anchor, anchor + "\n" + legend_html, 1)
 
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write(html)
+    if output_path is not None:
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(html)
 
-    return net
+    return net, html
 
 
 def plot_tmgraph_tcm(g, x_label, t, nodemembers, **kwargs):

@@ -211,13 +211,13 @@ coloring as `plot_tmgraph`:
 ```python
 from tmapper import plot_tmgraph_interactive
 
-plot_tmgraph_interactive(
+net, html = plot_tmgraph_interactive(
     g_simp, colorvar, members,
     colorlabel=colorvarname,
     labelmethod="median",
     nodesizemode="log",
     title=f"sample data | k={k}, d={d}, tx={texclude}",
-    output_path="tmgraph.html",
+    output_path="tmgraph.html",  # optional -- omit to skip writing to disk
 )
 ```
 
@@ -225,8 +225,14 @@ Open `tmgraph.html` in a browser: drag nodes around, zoom/pan, and hover over
 a node to see its member count and color value. Physics is off by default, so
 nodes stay exactly where the layout put them (but see
 [the API reference](api.md#tmapper.plot_tmgraph_interactive) if you want to
-enable physics simulation yourself via `net.set_options(...)` on the returned
-`pyvis.network.Network`).
+enable physics simulation yourself via `net.set_options(...)`).
+
+!!! tip "Embedding the HTML directly"
+    `output_path` is optional -- omit it and `plot_tmgraph_interactive` won't
+    write anything to disk at all. The returned `html` string is the exact
+    same standalone page content, ready to hand to something like
+    `streamlit.components.v1.html(html, height=900)` without a
+    write-then-read-back round trip.
 
 ## What's next
 

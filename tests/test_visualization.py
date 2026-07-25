@@ -138,20 +138,21 @@ def test_plot_tmgraph_clim_edge_case():
     matplotlib.pyplot.close("all")
 
 
-def test_plot_tmgraph_interactive_writes_html(tmp_path):
+def test_plot_tmgraph_interactive_returns_html_by_default(tmp_path):
+    # -- default output_path=None should return the HTML string with no
+    # disk side effect, so callers (e.g. a Streamlit app) can embed it
+    # directly without a write-then-read-back round trip.
     g3 = nx.DiGraph()
     g3.add_nodes_from(range(3))
     g3.add_edges_from([(0, 1), (1, 2), (2, 0)])
     members = [[0], [1, 2], list(range(3, 13))]
     x_label = np.ones(13)
-    out = tmp_path / "network.html"
 
-    net = plot_tmgraph_interactive(
-        g3, x_label, members, title="unit test network", output_path=str(out)
-    )
+    files_before = set(tmp_path.iterdir())
+    net, html = plot_tmgraph_interactive(g3, x_label, members, title="unit test network")
+    assert set(tmp_path.iterdir()) == files_before, \
+        "output_path=None (the default) should not write any file."
 
-    assert out.exists()
-    html = out.read_text(encoding="utf-8")
     # heading appears exactly once (pyvis's own template duplicates it
     # unconditionally; we strip the second copy)
     assert html.count("<h1>unit test network</h1>") == 1
@@ -159,5 +160,28 @@ def test_plot_tmgraph_interactive_writes_html(tmp_path):
     assert "data:image/png;base64," in html
     # physics disabled, so the network stays exactly where the layout put it
     assert '"physics": {"enabled": false}' in html or '"enabled": false' in html
+    assert len(net.nodes) == 3
+    assert len(net.edges) == 3
+
+
+def test_plot_tmgraph_interactive_writes_html_when_path_given(tmp_path):
+    g3 = nx.DiGraph()
+    g3.add_nodes_from(range(3))
+    g3.add_edges_from([(0, 1), (1, 2), (2, 0)])
+    members = [[0], [1, 2], list(range(3, 13))]
+    x_label = np.ones(13)
+    out = tmp_path / "network.html"
+
+    net, html = plot_tmgraph_interactive(
+        g3, x_label, members, title="unit test network", output_path=str(out)
+    )
+
+    assert out.exists()
+    # the written file and the returned string must be identical -- the
+    # whole point of returning html is that it's the same content you'd
+    # otherwise have to write-then-read-back from output_path.
+    assert out.read_text(encoding="utf-8") == html
+    assert len(net.nodes) == 3
+    assert len(net.edges) == 3
     assert len(net.nodes) == 3
     assert len(net.edges) == 3
