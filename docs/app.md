@@ -77,7 +77,7 @@ and would dominate the distance computation if selected.
 | **Variables** | Which numeric columns define the system's state. |
 | **z-score** | On by default. Uses `ddof=1`, matching MATLAB's convention (see [Concepts](concepts.md)). |
 | **start row / end row** | Restrict to a window. 0-indexed, following this port's convention — *not* the MATLAB app's 1-indexed fields. `end row` accepts `last`. |
-| **time index** | Which column says who is temporally adjacent. Defaults to row order; pick a column for data with real breaks (separate sessions/trials) or irregular sampling. Choosing one disables downsampling — see below. |
+| **time index** | Which column says who is temporally adjacent. Defaults to row order; pick a column for data with real breaks (separate sessions/trials) or irregular sampling. Combines with downsampling as long as the column is evenly sampled. |
 | **downsample (N)** | Keep every Nth row. A lowpass is applied first — see below. |
 | **embed lag / embed order** | Optional [delay embedding](quickstart.md#step-2-optional-delay-embedding). Order `1` skips it. |
 
@@ -128,6 +128,14 @@ a build has finished.
     post-removal list. Striding surviving rows would slide every later sample
     off the true time grid, inventing gaps at samples that were in fact
     evenly spaced.
+
+    A supplied **time index** column counts raw sampling intervals, so when
+    downsampling it is converted into decimated units — otherwise neighbours
+    would differ by N rather than 1 and *no* temporal edge would be built at
+    all. Real breaks scale by the same factor. This needs an evenly-sampled
+    column (gaps are fine); a genuinely irregular index has no interval to
+    decimate by, so that combination is refused rather than silently
+    distorted.
 
 ## Export / share
 

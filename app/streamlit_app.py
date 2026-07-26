@@ -193,26 +193,38 @@ def build_network(
     if end_row < start_row:
         raise ValueError("End row must be greater than or equal to start row.")
 
-    # -- a user-supplied time index describes the data's own sampling, so
-    # decimating underneath it would silently contradict it: the supplied
-    # values would no longer match the samples actually kept. Downsampling
-    # is therefore rejected outright rather than quietly ignored.
+    # -- a user-supplied time index. It can be combined with downsampling,
+    # but only after converting to decimated units: the column counts raw
+    # sampling intervals, so keeping every Nth row would make consecutive
+    # kept samples differ by N rather than 1 and tknndigraph would build no
+    # temporal edges at all. Dividing by (interval * N) restores a step of
+    # 1 between neighbours while scaling real breaks proportionally.
     tidx_source = None
+    tidx_unit = 1
     if tidx_var is not None:
-        if downsample > 1:
-            raise ValueError(
-                "Downsampling is not available when a time index column is chosen -- "
-                "the column describes the original sampling, so decimating under it "
-                "would no longer match the samples kept. Set downsample (N) to 1."
-            )
         col = df[tidx_var]
         if col.isna().any():
             raise ValueError(f"Time index column '{tidx_var}' contains missing values.")
         if not np.allclose(col.to_numpy(), np.rint(col.to_numpy())):
             raise ValueError(f"Time index column '{tidx_var}' must contain whole numbers.")
-        if np.any(np.diff(col.to_numpy()) <= 0):
+        vals = np.rint(col.to_numpy()).astype(np.int64)
+        steps = np.diff(vals)
+        if np.any(steps <= 0):
             raise ValueError(f"Time index column '{tidx_var}' must be strictly increasing.")
-        tidx_source = np.rint(col.to_numpy()).astype(np.int64)
+
+        # the base sampling interval: the smallest step present. Every other
+        # step must be a whole multiple of it, i.e. the column is a uniform
+        # grid with holes. Genuinely irregular spacing has no well-defined
+        # interval to decimate by, so refuse rather than silently distort it.
+        interval = int(steps.min())
+        if downsample > 1 and np.any(steps % interval != 0):
+            raise ValueError(
+                f"Downsampling needs a regular time index, but '{tidx_var}' has "
+                f"steps that are not multiples of its smallest step ({interval}). "
+                "Set downsample (N) to 1, or supply an evenly-sampled index."
+            )
+        tidx_source = vals
+        tidx_unit = interval * downsample
 
     window = df.iloc[start_row:end_row + 1]
 
@@ -291,8 +303,15 @@ def build_network(
     if tidx_source is None:
         tidx = (rows - rows[0]) // downsample
     else:
-        tidx = np.asarray(tidx_source, dtype=np.int64)[rows]
-        tidx = tidx - tidx.min()
+        vals = np.asarray(tidx_source, dtype=np.int64)[rows]
+        # tidx_unit is (base sampling interval * downsample), so neighbouring
+        # kept samples land 1 apart and real breaks scale proportionally
+        tidx = (vals - vals[0]) // tidx_unit
+        if np.any(np.diff(tidx) < 1):
+            raise ValueError(
+                "Downsampling by this factor collapses distinct time points onto the "
+                "same index. Reduce downsample (N)."
+            )
 
     D = cdist(X, X, metric="euclidean")
     g, par = tknndigraph(
@@ -704,18 +723,11 @@ def main():
         tidx_var = None if tidx_choice == "(from row order)" else tidx_choice
 
         downsample = st.number_input(
-            "downsample (N)", min_value=1,
-            value=1 if tidx_var else DEFAULTS["downsample"],
-            key="downsample", disabled=bool(tidx_var),
-            help=("Disabled while a time index column is chosen: that column describes "
-                  "the original sampling, so decimating under it would no longer match "
-                  "the samples kept."
-                  if tidx_var else
-                  "Keep every Nth row; a centered rolling-mean lowpass is applied first "
-                  "to avoid aliasing."),
+            "downsample (N)", min_value=1, value=DEFAULTS["downsample"], key="downsample",
+            help="Keep every Nth row; a centered rolling-mean lowpass is applied first "
+                 "to avoid aliasing. Works alongside a time index column, provided that "
+                 "column is evenly sampled (gaps are fine).",
         )
-        if tidx_var:
-            downsample = 1
         col3, col4 = st.columns(2)
         lag = col3.number_input("embed lag", min_value=0, value=DEFAULTS["embed_lag"], key="embed_lag")
         order = col4.number_input("embed order", min_value=1, value=DEFAULTS["embed_order"], key="embed_order")

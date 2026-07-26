@@ -356,33 +356,62 @@ def test_user_supplied_tidx_column_is_used(app):
     assert (steps > 1).sum() == 1, "there should be exactly one break"
 
 
-def test_user_supplied_tidx_rejects_downsampling_and_bad_columns(app):
+@pytest.mark.parametrize("downsample", [1, 2, 4, 5])
+def test_user_supplied_tidx_works_with_downsampling(app, downsample):
+    """A supplied index counts *raw* sampling intervals, so decimating must
+    convert to decimated units -- otherwise neighbouring kept samples would
+    differ by N rather than 1 and no temporal edge would be built at all.
+    Real breaks must survive, scaled by the same factor.
+    """
+    n = 200
+    t = np.arange(n) + (np.arange(n) >= 100) * 500  # one genuine break
+    df = pd.DataFrame({
+        "t": t,
+        "x": np.sin(np.arange(n) / 7.0),
+        "y": np.cos(np.arange(n) / 7.0),
+    })
+    built = app.build_network(
+        df, ("x", "y"), True, 0, None, downsample, 0, 1,
+        3, 3.0, 1, 100.0, float("inf"), True, tidx_var="t",
+    )
+    steps = np.diff(built["tidx"])
+    assert (steps == 1).sum() == len(steps) - 1, \
+        "consecutive kept samples must differ by exactly 1, or no temporal edges form"
+    assert (steps > 1).sum() == 1, "the single real break must remain a single break"
+    # the exact integer depends on which sample the stride last kept before
+    # the break, so assert the scaling property rather than re-deriving it
+    assert abs(steps.max() - 501 / downsample) <= 2, \
+        f"the break should scale as ~501/{downsample}, got {steps.max()}"
+
+
+def test_user_supplied_tidx_rejects_bad_columns(app):
     n = 60
     df = pd.DataFrame({
         "t": np.arange(n),
         "bad": np.r_[np.arange(n - 1), [0]].astype(float),  # not increasing
         "frac": np.arange(n) + 0.5,                          # not whole numbers
+        # irregular spacing: steps are not multiples of the smallest step,
+        # so there is no interval to decimate by
+        "irregular": np.cumsum(np.r_[[0], np.tile([2, 3, 7], n)[: n - 1]]),
         "x": np.sin(np.arange(n) / 7.0),
         "y": np.cos(np.arange(n) / 7.0),
     })
-    common = dict(zscore_on=True, start_row=0, end_row=None, lag=0, order=1,
-                  k=3, d=3.0, texclude=1, maxdistprct=100.0,
-                  maxdist=float("inf"), reciprocal=True)
 
     def build(col, downsample=1):
         return app.build_network(
-            df, ("x", "y"), common["zscore_on"], common["start_row"], common["end_row"],
-            downsample, common["lag"], common["order"], common["k"], common["d"],
-            common["texclude"], common["maxdistprct"], common["maxdist"],
-            common["reciprocal"], tidx_var=col,
+            df, ("x", "y"), True, 0, None, downsample, 0, 1,
+            3, 3.0, 1, 100.0, float("inf"), True, tidx_var=col,
         )
 
-    with pytest.raises(ValueError, match="Downsampling is not available"):
-        build("t", downsample=4)
     with pytest.raises(ValueError, match="strictly increasing"):
         build("bad")
     with pytest.raises(ValueError, match="whole numbers"):
         build("frac")
+    # irregular spacing is fine at stride 1, but has no well-defined
+    # interval to decimate by
+    build("irregular", downsample=1)
+    with pytest.raises(ValueError, match="needs a regular time index"):
+        build("irregular", downsample=3)
 
 
 def test_row_range_restricts_to_exactly_that_window(app, sample_df):
