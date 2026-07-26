@@ -405,6 +405,85 @@ def test_tidx_matches_the_grid_under_downsampling(
     assert np.diff(tidx).min() >= 1, f"[{label}] tidx must strictly increase"
 
 
+def _seasoned(app_mod):
+    """Sample slice plus a genuine categorical column."""
+    df, _ = app_mod.read_csv_smart(REPO_ROOT / "sampledata" / "EL_temp.csv")
+    df = df.iloc[53883:54600].reset_index(drop=True)
+    df["season"] = pd.cut(
+        df["Date"].dt.month % 12 // 3, bins=[-1, 0, 1, 2, 3],
+        labels=["winter", "spring", "summer", "fall"],
+    ).astype(str)
+    return df
+
+
+def test_date_strings_are_parsed_like_matlab(app):
+    """MATLAB's readtable makes datetimes out of date strings, which is why
+    tmapper_demo.m can use dat.Date directly. pandas leaves them as text, so
+    the app parses them -- otherwise a perfectly good time column is unusable.
+    """
+    df, _ = app.read_csv_smart(REPO_ROOT / "sampledata" / "EL_temp.csv")
+    assert pd.api.types.is_datetime64_any_dtype(df["Date"])
+    assert app.datetime_columns(df) == ["Date"]
+    # but it must stay out of the *state variables*: distances need numbers
+    assert "Date" not in app.numeric_columns(df)
+    assert "Date" in app.time_column_options(df)
+    assert "Date" in app.color_column_options(df)
+
+
+def test_short_text_columns_are_not_mangled_into_dates(app):
+    """The parser must not turn a categorical column into nonsense
+    timestamps -- it requires nearly every value to parse."""
+    df = pd.DataFrame({"cond": ["a", "b", "c", "a"], "x": [1.0, 2, 3, 4]})
+    assert app._maybe_datetime(df["cond"]) is None
+    assert app.categorical_columns(df) == ["cond"]
+
+
+def test_datetime_column_works_as_a_time_index(app):
+    """Daily dates should give one tidx step per day -- and real missing
+    days then show up as genuine gaps rather than being bridged."""
+    df, _ = app.read_csv_smart(REPO_ROOT / "sampledata" / "EL_temp.csv")
+    df = df.iloc[53883:].reset_index(drop=True)
+    built = app.build_network(
+        df, ("tmax", "tmin", "prcp"), True, 0, 800, 1, 0, 1,
+        3, 3.0, 1, 100.0, float("inf"), True, tidx_var="Date",
+    )
+    steps = np.diff(built["tidx"])
+    assert steps.min() >= 1
+    assert np.bincount(steps).argmax() == 1, "daily sampling should step by 1 per day"
+
+
+def test_categorical_column_can_colour_the_network(app):
+    """Colouring by condition/state is the common case and needs no
+    distance-metric changes -- categories map to nominal integer codes."""
+    df = _seasoned(app)
+    assert "season" in app.color_column_options(df)
+    # ...but not as a time axis or index: categories have no order
+    assert "season" not in app.time_column_options(df)
+    assert "season" not in app.numeric_columns(df)
+
+    built = app.build_network(
+        df, ("tmax", "tmin", "prcp"), True, 0, None, 1, 0, 1,
+        3, 3.0, 30, 100.0, 0.5, True,
+    )
+    vals, label, cats = app.resolve_color_values(
+        df, "season", built["rows"], built["tidx"]
+    )
+    assert cats == ["fall", "spring", "summer", "winter"], "categories must be reported"
+    assert set(np.unique(vals)) <= set(range(len(cats))), "values must be category codes"
+    assert label == "season"
+
+
+def test_colormap_lists_are_type_appropriate(app):
+    """Categories need a qualitative palette; a continuous ramp would imply
+    an ordering between them that doesn't exist."""
+    assert "jet" in app.CONTINUOUS_CMAPS
+    assert "tab10" in app.CATEGORICAL_CMAPS
+    assert not set(app.CONTINUOUS_CMAPS) & set(app.CATEGORICAL_CMAPS)
+    import matplotlib.pyplot as plt
+    for name in app.CONTINUOUS_CMAPS + app.CATEGORICAL_CMAPS:
+        plt.get_cmap(name)  # must be a real matplotlib colormap
+
+
 def test_user_supplied_tidx_column_is_used(app):
     """A chosen time-index column must drive temporal adjacency, so its own
     gaps (separate sessions, irregular sampling) break the chain."""

@@ -74,7 +74,7 @@ and would dominate the distance computation if selected.
 
 | Control | Effect |
 | --- | --- |
-| **Variables** | Which numeric columns define the system's state. |
+| **Variables** | Which numeric columns define the system's state. Only numeric columns qualify — distances need real numbers. |
 | **z-score** | On by default. Uses `ddof=1`, matching MATLAB's convention (see [Concepts](concepts.md)). |
 | **start row / end row** | Restrict to a window. 0-indexed, following this port's convention — *not* the MATLAB app's 1-indexed fields. `end row` accepts `last`. |
 | **time index** | Which column says who is temporally adjacent. Defaults to row order; pick a column for data with real breaks (separate sessions/trials) or irregular sampling. Combines with downsampling as long as the column is evenly sampled. |
@@ -90,10 +90,25 @@ accepts `inf`.
 
 ### Plot Options
 
-Color/time variable, node size mode, label method, and whether to show the
-recurrence plot. **Changing any of these re-renders the existing network
-rather than rebuilding it**, so it is cheap to click through them freely once
-a build has finished.
+Colour variable, colormap, time variable, node size mode, label method, and
+whether to show the recurrence plot. **Changing any of these re-renders the
+existing network rather than rebuilding it**, so it is cheap to click through
+them freely once a build has finished.
+
+**Colour by** accepts anything — numbers, dates, or text categories such as
+condition, trial, or behavioural state. Categories are treated as purely
+nominal labels: they map to integer codes, aggregate per node by majority
+vote, and the colormap list switches to qualitative palettes, where adjacent
+colours are unrelated rather than a ramp. (Averaging category codes is
+meaningless, so `mean`/`median` are hidden for them.)
+
+!!! note "Date columns"
+    MATLAB's `readtable` turns date strings into `datetime` automatically —
+    which is why `tmapper_demo.m` can use `dat.Date` straight as its time
+    axis. pandas leaves them as text, so the app parses them on load. A
+    `Date` column therefore works as a time axis or a **time index** with no
+    preparation: for daily data it gives one step per day, so genuinely
+    missing days become real gaps instead of being bridged.
 
 ## Things handled for you
 

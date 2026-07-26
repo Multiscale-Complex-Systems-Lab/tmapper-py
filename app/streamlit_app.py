@@ -16,11 +16,13 @@ the *cached* network on every Streamlit rerun -- cheap, no rebuild.
 
 import inspect
 import json
+import warnings
 import zipfile
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 
+import matplotlib.dates as mdates
 import networkx as nx
 import numpy as np
 import pandas as pd
@@ -74,10 +76,17 @@ Date,tmax,tmin,prcp     <- header row
 1990-01-02,-3,-22,0
 ```
 
-**Only numeric columns can be selected** — as build variables, for colouring,
-for the time axis, or as a time index. Text and date columns are read but
-can't currently be picked, so to use a timestamp, include it as a numeric
-column too (seconds, or a sample number).
+**Which columns can be used where:**
+
+- **Build variables** — numeric only. The pipeline measures Euclidean
+  distances between state vectors, which needs real numbers.
+- **Time axis / time index** — numeric or dates.
+- **Colour by** — anything, including text categories (condition, trial,
+  behavioural state). Categories are treated as purely nominal labels and
+  aggregated per node by majority vote.
+
+Date strings are detected and parsed automatically, so a `Date` column works
+as a time index or axis without any preparation.
 
 You don't need to clean the file first:
 
@@ -119,11 +128,73 @@ def read_csv_smart(path_or_buffer):
     dropped_index_col = df.columns[0].startswith("Unnamed:")
     if dropped_index_col:
         df = df.drop(columns=df.columns[0])
-    return df.reset_index(drop=True), dropped_index_col
+    df = df.reset_index(drop=True)
+
+    # MATLAB's readtable turns date strings into datetime automatically --
+    # which is why tmapper_demo.m can use dat.Date straight as its time
+    # axis. pandas leaves them as plain strings, so parse them here or a
+    # perfectly good time column stays unusable.
+    for c in df.columns:
+        parsed = _maybe_datetime(df[c])
+        if parsed is not None:
+            df[c] = parsed
+    return df, dropped_index_col
+
+
+def _maybe_datetime(col):
+    """Parsed datetimes if this column looks like dates, else None.
+
+    Requires nearly every non-empty value to parse, so a categorical column
+    of short strings isn't mangled into nonsense timestamps.
+    """
+    if col.dtype != object:
+        return None
+    present = int(col.notna().sum())
+    if present == 0:
+        return None
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            parsed = pd.to_datetime(col, errors="coerce")
+    except Exception:
+        return None
+    if int(parsed.notna().sum()) >= 0.9 * present:
+        return parsed
+    return None
 
 
 def numeric_columns(df):
+    """Columns usable as *state variables*: strictly numeric.
+
+    Dates and categories are deliberately excluded here -- the pipeline
+    measures Euclidean distances between state vectors, which needs real
+    numbers. They are still offered for colouring / time axis / time index
+    via the helpers below.
+    """
     return [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+
+
+def datetime_columns(df):
+    return [c for c in df.columns if pd.api.types.is_datetime64_any_dtype(df[c])]
+
+
+def categorical_columns(df):
+    """Text / categorical columns -- usable for colouring only."""
+    return [
+        c for c in df.columns
+        if not pd.api.types.is_numeric_dtype(df[c])
+        and not pd.api.types.is_datetime64_any_dtype(df[c])
+    ]
+
+
+def color_column_options(df):
+    """Anything can colour a node: numbers, dates, or categories."""
+    return ["(row index)"] + numeric_columns(df) + datetime_columns(df) + categorical_columns(df)
+
+
+def time_column_options(df):
+    """Axis labels / time index: ordered quantities only, so no categories."""
+    return ["(row index)"] + numeric_columns(df) + datetime_columns(df)
 
 
 def resolve_data_action(sample_clicked, upload_token, claimed_token):
@@ -166,6 +237,42 @@ def set_data(df, source_label, source_code):
     st.session_state["data_source_code"] = source_code
     st.session_state["numeric_vars"] = numvars
     st.session_state["selected_vars"] = numvars
+
+
+# --------------------------------------------------------------- colouring
+
+# Continuous data gets a sequential/diverging map; categories need a
+# qualitative one, where adjacent colours are unrelated rather than a ramp.
+CONTINUOUS_CMAPS = ["jet", "viridis", "plasma", "magma", "cividis", "turbo", "coolwarm"]
+CATEGORICAL_CMAPS = ["tab10", "tab20", "Set1", "Set2", "Dark2", "Paired", "Accent"]
+
+
+def resolve_color_values(df, color_var, rows, tidx):
+    """Per-time-point colour values, whatever the column's type.
+
+    Returns (values, label, categories). ``categories`` is None for
+    continuous data, or the ordered category names when the column is
+    categorical -- the caller needs them to pin the colour scale so each
+    category keeps its own band.
+
+    Categories are mapped to integer codes rather than any numeric value
+    read off the data: the codes are purely nominal, which is why the
+    aggregation is forced to 'mode' (a mean of category codes is
+    meaningless) and a qualitative colormap is used.
+    """
+    if color_var == "(row index)":
+        return tidx.astype(float), "row index", None
+
+    col = df[color_var]
+    if pd.api.types.is_datetime64_any_dtype(col):
+        # matplotlib date numbers keep the axis/colourbar human-readable
+        vals = mdates.date2num(col.to_numpy())[rows]
+        return vals, color_var, None
+    if pd.api.types.is_numeric_dtype(col):
+        return col.to_numpy()[rows], color_var, None
+
+    codes, categories = pd.factorize(col, sort=True)
+    return codes.astype(float)[rows], color_var, list(categories)
 
 
 FIGURE_WIDTH_PX = 560
@@ -260,9 +367,16 @@ def build_network(
         col = df[tidx_var]
         if col.isna().any():
             raise ValueError(f"Time index column '{tidx_var}' contains missing values.")
-        if not np.allclose(col.to_numpy(), np.rint(col.to_numpy())):
-            raise ValueError(f"Time index column '{tidx_var}' must contain whole numbers.")
-        vals = np.rint(col.to_numpy()).astype(np.int64)
+        if pd.api.types.is_datetime64_any_dtype(col):
+            # integer nanoseconds. Deliberately NOT routed through the float
+            # check below: epoch-nanosecond values are ~1e18, far past the
+            # 2^53 where float64 stops representing integers exactly, so a
+            # rounding test on them would be meaningless.
+            vals = col.to_numpy().astype("datetime64[ns]").astype(np.int64)
+        else:
+            if not np.allclose(col.to_numpy(), np.rint(col.to_numpy())):
+                raise ValueError(f"Time index column '{tidx_var}' must contain whole numbers.")
+            vals = np.rint(col.to_numpy()).astype(np.int64)
         steps = np.diff(vals)
         if np.any(steps <= 0):
             raise ValueError(f"Time index column '{tidx_var}' must be strictly increasing.")
@@ -463,7 +577,7 @@ def build_graphml(built, colorvar, labelmethod):
 def build_params_json(built, source_label, source_code, selected_vars, zscore_on,
                       start_row, end_row, downsample, lag, order, k, d, texclude,
                       maxdistprct, maxdist, reciprocal, color_var, time_var,
-                      nodesizemode, labelmethod, show_recurrence, tidx_var=None):
+                      nodesizemode, labelmethod, show_recurrence, tidx_var=None, cmap="jet"):
     """Full provenance: data source, every preprocessing/build/plot
     setting, and the resulting network's shape -- enough to reproduce or
     audit the build without the app."""
@@ -504,6 +618,7 @@ def build_params_json(built, source_label, source_code, selected_vars, zscore_on
             "color_by": color_var,
             "time_axis": time_var,
             "nodesizemode": nodesizemode,
+            "cmap": cmap,
             "labelmethod": labelmethod,
             "show_recurrence": bool(show_recurrence),
         },
@@ -539,7 +654,8 @@ def build_export_zip(html, timeline_csv, graphml_bytes, params_json, code):
 
 # ============================================================ cheap: render
 
-def render_network(built, df, color_var, time_var, nodesizemode, labelmethod, show_recurrence):
+def render_network(built, df, color_var, time_var, nodesizemode, labelmethod,
+                   show_recurrence, cmap="jet"):
     """Render the (cached) network and optional recurrence plot.
 
     Returns the rendered artifacts so the caller can offer them as
@@ -551,12 +667,10 @@ def render_network(built, df, color_var, time_var, nodesizemode, labelmethod, sh
         built["g_simp"], built["members"], built["rows"], built["tidx"], built["par"]
     )
 
-    if color_var == "(row index)":
-        colorvar = tidx.astype(float)
-        colorlabel = "row index"
-    else:
-        colorvar = df[color_var].to_numpy()[rows]
-        colorlabel = color_var
+    colorvar, colorlabel, categories = resolve_color_values(df, color_var, rows, tidx)
+    # pin the scale so each category owns a full band of the qualitative map,
+    # instead of K categories being squeezed onto a continuous ramp
+    nodeclim = (-0.5, len(categories) - 0.5) if categories else None
 
     title = f"k={built['k']}, d={built['d']}, texclude={built['texclude']}, maxdist={par['max_neighbor_dist']:.4g}"
     if built["order"] > 1:
@@ -567,7 +681,7 @@ def render_network(built, df, color_var, time_var, nodesizemode, labelmethod, sh
     net, html = plot_tmgraph_interactive(
         g_simp, colorvar, members,
         colorlabel=colorlabel, nodesizemode=nodesizemode, labelmethod=labelmethod,
-        title=title,
+        cmap=cmap, nodeclim=nodeclim, title=title,
     )
     components.html(html, height=800, scrolling=True)
 
@@ -575,6 +689,8 @@ def render_network(built, df, color_var, time_var, nodesizemode, labelmethod, sh
     if show_recurrence:
         if time_var == "(row index)":
             t = tidx
+        elif pd.api.types.is_datetime64_any_dtype(df[time_var]):
+            t = mdates.date2num(df[time_var].to_numpy())[rows]
         else:
             t = df[time_var].to_numpy()[rows]
 
@@ -589,7 +705,7 @@ def render_network(built, df, color_var, time_var, nodesizemode, labelmethod, sh
         fig.colorbar(im, ax=ax, label="path length")
         show_figure(fig)
 
-    return html, fig, colorvar, colorlabel, title
+    return html, fig, colorvar, colorlabel, title, nodeclim
 
 
 # ========================================================= code generation
@@ -606,12 +722,16 @@ def _coderepr(x):
 def generate_code(source_code, selected_vars, zscore_on, start_row, end_row, downsample,
                    lag, order, k, d, texclude, maxdistprct, maxdist, reciprocal,
                    color_var, time_var, nodesizemode, labelmethod, show_recurrence,
-                   tidx_var=None):
+                   tidx_var=None, cmap="jet", color_kind="numeric"):
     end_row_repr = "None" if end_row is None else repr(end_row)
+    color_is_datetime = color_kind == "datetime"
+    color_is_category = color_kind == "category"
+
     lines = [
         "# Temporal Mapper -- generated by the Streamlit app's code view",
         "import numpy as np",
         "import pandas as pd",
+        *(["import matplotlib.dates as mdates"] if color_is_datetime else []),
         "from scipy.spatial.distance import cdist",
         "from scipy.stats import zscore",
         "from tmapper import tknndigraph, filtergraph, plot_tmgraph_interactive, tcm_distance",
@@ -675,12 +795,19 @@ def generate_code(source_code, selected_vars, zscore_on, start_row, end_row, dow
         f"g_simp, members, nodesize, D_simp = filtergraph(g, {d!r}, reciprocal={reciprocal!r})",
         "",
     ]
-    color_expr = "tidx.astype(float)" if color_var == "(row index)" else f"dat['{color_var}'].to_numpy()[rows]"
+    if color_var == "(row index)":
+        color_expr = "tidx.astype(float)"
+    elif color_is_datetime:
+        color_expr = f"mdates.date2num(dat['{color_var}'].to_numpy())[rows]"
+    elif color_is_category:
+        color_expr = f"pd.factorize(dat['{color_var}'], sort=True)[0].astype(float)[rows]"
+    else:
+        color_expr = f"dat['{color_var}'].to_numpy()[rows]"
     lines += [
         f"colorvar = {color_expr}",
         f"net, html = plot_tmgraph_interactive(g_simp, colorvar, members, "
         f"colorlabel={color_var!r}, nodesizemode={nodesizemode!r}, labelmethod={labelmethod!r}, "
-        f"output_path='tmgraph.html')",
+        f"cmap={cmap!r}, output_path='tmgraph.html')",
         "# open tmgraph.html in a browser, or embed `html` directly (e.g. in Streamlit)",
     ]
     if show_recurrence:
@@ -806,7 +933,8 @@ def main():
         end_row = None if end_row_str.strip().lower() == "last" else int(end_row_str)
 
         tidx_choice = st.selectbox(
-            "time index", ["(from row order)"] + st.session_state["numeric_vars"],
+            "time index",
+            ["(from row order)"] + time_column_options(df)[1:],
             key="tidx_var",
             help="Which samples count as temporally adjacent. Points are linked in time "
                  "only when their index differs by exactly 1, so gaps in this column "
@@ -887,14 +1015,33 @@ def main():
         )
 
         st.header("Plot Options")
-        color_options = ["(row index)"] + st.session_state["numeric_vars"]
         color_var = st.selectbox(
-            "Color by", color_options, key="color_var",
-            help="Value used to colour nodes. Each node aggregates its member time "
-                 "points using the label method below.",
+            "Color by", color_column_options(df), key="color_var",
+            help="Value used to colour nodes -- numeric, a date, or a category "
+                 "(condition, trial, behavioural state). Each node aggregates its "
+                 "member time points using the label method below.",
+        )
+        color_is_categorical = (
+            color_var != "(row index)" and color_var in categorical_columns(df)
+        )
+        if color_var == "(row index)":
+            color_kind = "index"
+        elif color_is_categorical:
+            color_kind = "category"
+        elif color_var in datetime_columns(df):
+            color_kind = "datetime"
+        else:
+            color_kind = "numeric"
+        cmap_choices = CATEGORICAL_CMAPS if color_is_categorical else CONTINUOUS_CMAPS
+        cmap = st.selectbox(
+            "Colormap", cmap_choices, key="cmap_categorical" if color_is_categorical else "cmap",
+            help=("Qualitative palette: adjacent colours are unrelated, which is what "
+                  "you want for categories." if color_is_categorical else
+                  "Continuous palette. 'jet' is the toolbox default; viridis/cividis are "
+                  "perceptually uniform and colour-blind friendlier."),
         )
         time_var = st.selectbox(
-            "Time axis", color_options, key="time_var",
+            "Time axis", time_column_options(df), key="time_var",
             help="Values labelling the recurrence plot's axes. Only affects that plot.",
         )
         nodesizemode = st.selectbox(
@@ -904,7 +1051,10 @@ def main():
                  "'log' or 'rank' usually read better than 'original'.",
         )
         labelmethod = st.selectbox(
-            "Label method", ["mode", "mean", "median", "none"], key="labelmethod",
+            "Label method",
+            # averaging category codes is meaningless, so only mode/none apply
+            ["mode", "none"] if color_is_categorical else ["mode", "mean", "median", "none"],
+            key="labelmethod_categorical" if color_is_categorical else "labelmethod",
             help="How each node's colour is aggregated from its member time points. "
                  "Use 'mode' for categorical labels, 'mean'/'median' for continuous "
                  "values, 'none' for a single flat colour.",
@@ -964,8 +1114,9 @@ def main():
             st.warning(msg)
         st.success(f"Built network: {built['g_simp'].number_of_nodes()} nodes, "
                    f"{built['g_simp'].number_of_edges()} edges.")
-        html, rec_fig, colorvar, colorlabel, title = render_network(
-            built, df, color_var, time_var, nodesizemode, labelmethod, show_recurrence
+        html, rec_fig, colorvar, colorlabel, title, nodeclim = render_network(
+            built, df, color_var, time_var, nodesizemode, labelmethod,
+            show_recurrence, cmap,
         )
 
         # generated once: shown in the code panel below AND bundled into
@@ -973,7 +1124,8 @@ def main():
         code = generate_code(
             st.session_state["data_source_code"], selected_vars, zscore_on, start_row, end_row,
             downsample, lag, order, k, d, texclude, maxdistprct, maxdist, reciprocal,
-            color_var, time_var, nodesizemode, labelmethod, show_recurrence, tidx_var,
+            color_var, time_var, nodesizemode, labelmethod, show_recurrence, tidx_var, cmap,
+            color_kind,
         )
 
         with st.expander("Export / share"):
@@ -1007,7 +1159,7 @@ def main():
                     plot_tmgraph(
                         built["g_simp"], colorvar, built["members"], ax=ax_static,
                         nodesizemode=nodesizemode, labelmethod=labelmethod,
-                        colorlabel=colorlabel,
+                        colorlabel=colorlabel, cmap=cmap, nodeclim=nodeclim,
                     )
                     ax_static.set_title(title, fontsize=9)
                     sbuf = BytesIO()
@@ -1046,7 +1198,7 @@ def main():
                 built, st.session_state["data_source"], st.session_state["data_source_code"],
                 selected_vars, zscore_on, start_row, end_row, downsample, lag, order,
                 k, d, texclude, maxdistprct, maxdist, reciprocal,
-                color_var, time_var, nodesizemode, labelmethod, show_recurrence, tidx_var,
+                color_var, time_var, nodesizemode, labelmethod, show_recurrence, tidx_var, cmap,
             )
             st.download_button(
                 "Parameters (.json)", data=params_json, file_name="params.json",
