@@ -122,22 +122,27 @@ _PYPLOT_HAS_WIDTH = "width" in inspect.signature(st.pyplot).parameters
 
 
 def show_figure(fig, width_px=FIGURE_WIDTH_PX):
-    """Render a matplotlib figure at a fixed, readable width instead of
-    letting it stretch to fill the column -- a 6x5.5in figure blown up to a
-    wide monitor's width is unreadable.
+    """Render a matplotlib figure centered, at a fixed readable width
+    instead of stretched to fill the column -- a 6x5.5in figure blown up to
+    a wide monitor's width is unreadable, and left-aligning a narrow figure
+    under the full-width network plot looks lopsided.
 
-    Uses an explicit pixel width rather than 'content'/native size, since
-    the native size still rendered near 1000px. Streamlit clamps this to the
-    container on narrow screens, so it stays responsive on a phone.
+    Centering is done with padding columns rather than CSS so it doesn't
+    depend on Streamlit's internal DOM test-ids. Uses an explicit pixel
+    width rather than 'content'/native size, since the native size still
+    rendered near 1000px; Streamlit clamps it to the container on narrow
+    screens, so this stays responsive on a phone.
 
     Note on newer Streamlit: `width` defaults to 'stretch' and *overrides*
     the deprecated `use_container_width`, so passing only the old flag there
     silently does nothing.
     """
-    if _PYPLOT_HAS_WIDTH:
-        st.pyplot(fig, width=width_px)
-    else:
-        st.pyplot(fig, use_container_width=False)
+    left, mid, right = st.columns([1, 4, 1])
+    with mid:
+        if _PYPLOT_HAS_WIDTH:
+            st.pyplot(fig, width=width_px)
+        else:
+            st.pyplot(fig, use_container_width=False)
 
 
 # ==================================================== pre-flight size guard

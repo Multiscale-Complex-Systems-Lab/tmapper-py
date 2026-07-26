@@ -26,7 +26,8 @@ hovering a node reports its member count and colour value.
 /// caption
 Below it, the geodesic recurrence plot, with the **Export / share** and **Show
 equivalent code** panels beneath. The repeating block structure is the same
-seasonal recurrence seen as a loop in the network above.
+seasonal recurrence seen as a loop in the network above — bright bands mark
+times the system had to travel far around the loop to get from one to the other.
 ///
 
 ## Install and launch
