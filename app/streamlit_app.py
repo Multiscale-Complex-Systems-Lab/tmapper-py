@@ -43,6 +43,7 @@ DEFAULTS = {
     "start_row": 0,
     "end_row_str": "last",
     "downsample": 1,
+    "tidx_var": "(from row order)",
     "embed_lag": 0,
     "embed_order": 1,
     "k": 3,
@@ -176,6 +177,7 @@ def oversized_window_message(window_rows, downsample):
 def build_network(
     df, selected_vars, zscore_on, start_row, end_row, downsample,
     lag, order, k, d, texclude, maxdistprct, maxdist, reciprocal,
+    tidx_var=None,
 ):
     """tknndigraph -> filtergraph on the resolved parameters. Cached by
     st.cache_data, keyed on every argument here -- re-calling with the
@@ -191,37 +193,60 @@ def build_network(
     if end_row < start_row:
         raise ValueError("End row must be greater than or equal to start row.")
 
+    # -- a user-supplied time index describes the data's own sampling, so
+    # decimating underneath it would silently contradict it: the supplied
+    # values would no longer match the samples actually kept. Downsampling
+    # is therefore rejected outright rather than quietly ignored.
+    tidx_source = None
+    if tidx_var is not None:
+        if downsample > 1:
+            raise ValueError(
+                "Downsampling is not available when a time index column is chosen -- "
+                "the column describes the original sampling, so decimating under it "
+                "would no longer match the samples kept. Set downsample (N) to 1."
+            )
+        col = df[tidx_var]
+        if col.isna().any():
+            raise ValueError(f"Time index column '{tidx_var}' contains missing values.")
+        if not np.allclose(col.to_numpy(), np.rint(col.to_numpy())):
+            raise ValueError(f"Time index column '{tidx_var}' must contain whole numbers.")
+        if np.any(np.diff(col.to_numpy()) <= 0):
+            raise ValueError(f"Time index column '{tidx_var}' must be strictly increasing.")
+        tidx_source = np.rint(col.to_numpy()).astype(np.int64)
+
     window = df.iloc[start_row:end_row + 1]
 
-    # -- drop rows with missing (NaN) values in the selected variables
-    # BEFORE lowpass filtering/downsampling: a rolling-mean lowpass (like
-    # z-scoring) would otherwise smear a gap into its neighbors too. This
-    # automates the "clean your data first" convention documented for the
-    # scripted pipeline instead of assuming the caller already did it --
-    # an unremoved NaN would otherwise poison the whole distance matrix
-    # silently.
-    missing_mask = window[list(selected_vars)].isna().any(axis=1)
-    clean = window[~missing_mask]
+    cols = list(selected_vars)
+    missing_mask = window[cols].isna().any(axis=1)
     n_dropped = int(missing_mask.sum())
-    if len(clean) < 2:
+
+    # -- Decimate on the ORIGINAL row grid, never on the post-removal list.
+    # Striding the cleaned rows slides every later sample off the true time
+    # grid: after one dropped row, "every 4th surviving row" is no longer
+    # "every 4th time step", so spacings drift and phantom gaps appear at
+    # samples that were in fact evenly spaced.
+    #
+    # The lowpass runs over the raw window with pandas' NaN-skipping mean,
+    # so an isolated missing sample is simply left out of its window's
+    # average rather than knocking a grid point out entirely. Only a grid
+    # point whose whole window is missing ends up NaN, and those are the
+    # ones dropped below -- a genuine hole in the data.
+    if downsample > 1:
+        smoothed = window[cols].rolling(window=downsample, center=True, min_periods=1).mean()
+        grid = smoothed.iloc[::downsample]
+    else:
+        # no smoothing to lean on at stride 1, so missing rows drop outright
+        grid = window[cols]
+
+    keep = ~grid.isna().any(axis=1)
+    n_grid_dropped = int((~keep).sum())
+    values = grid[keep].to_numpy()
+    base_rows = grid.index.to_numpy()[keep.to_numpy()]
+    if len(base_rows) < 2:
         raise ValueError(
-            f"Row range/downsampling/missing-data removal leaves only {len(clean)} "
+            f"Row range/downsampling/missing-data removal leaves only {len(base_rows)} "
             "row(s) -- need at least 2."
         )
-
-    # -- anti-aliasing lowpass filter before downsampling: a plain strided
-    # pick (every Nth row) can alias high-frequency content into spurious
-    # low-frequency structure. A centered rolling mean over a window the
-    # size of the downsample factor attenuates that first.
-    if downsample > 1:
-        smoothed = clean[list(selected_vars)].rolling(
-            window=downsample, center=True, min_periods=1
-        ).mean()
-        values = smoothed.iloc[::downsample].to_numpy()
-        base_rows = clean.index.to_numpy()[::downsample]
-    else:
-        values = clean[list(selected_vars)].to_numpy()
-        base_rows = clean.index.to_numpy()
 
     if zscore_on:
         # ddof=1 matches MATLAB's zscore convention (sample std, N-1) --
@@ -253,7 +278,21 @@ def build_network(
     # recent slice, since embedding stacks past->present), mapped back
     # through base_rows since X_raw may already be a range/downsample subset.
     rows = base_rows[(n_raw - n):]
-    tidx = np.arange(n)
+
+    # -- tidx must reflect *real* time position, not array position.
+    # tknndigraph links two points as temporal neighbours iff their tidx
+    # differs by exactly 1, so a plain arange would silently bridge a
+    # dropped stretch and fabricate an edge across it.
+    #
+    # Because decimation happens on the original grid above, every retained
+    # row is an exact multiple of `downsample` from the first, so this is
+    # integer-exact: consecutive grid points step by 1, and a dropped grid
+    # point (a real hole) leaves a jump of more than 1.
+    if tidx_source is None:
+        tidx = (rows - rows[0]) // downsample
+    else:
+        tidx = np.asarray(tidx_source, dtype=np.int64)[rows]
+        tidx = tidx - tidx.min()
 
     D = cdist(X, X, metric="euclidean")
     g, par = tknndigraph(
@@ -268,6 +307,7 @@ def build_network(
     return {
         "g_simp": g_simp, "members": members, "rows": rows, "tidx": tidx,
         "par": par, "n_dropped": n_dropped, "n_window": len(window),
+        "n_grid_dropped": n_grid_dropped,
         "k": k, "d": d, "texclude": texclude, "lag": lag, "order": order,
         "downsample": downsample,
     }
@@ -349,7 +389,7 @@ def build_graphml(built, colorvar, labelmethod):
 def build_params_json(built, source_label, source_code, selected_vars, zscore_on,
                       start_row, end_row, downsample, lag, order, k, d, texclude,
                       maxdistprct, maxdist, reciprocal, color_var, time_var,
-                      nodesizemode, labelmethod, show_recurrence):
+                      nodesizemode, labelmethod, show_recurrence, tidx_var=None):
     """Full provenance: data source, every preprocessing/build/plot
     setting, and the resulting network's shape -- enough to reproduce or
     audit the build without the app."""
@@ -369,6 +409,7 @@ def build_params_json(built, source_label, source_code, selected_vars, zscore_on
             "start_row": _jsonsafe(start_row),
             "end_row": "last" if end_row is None else _jsonsafe(end_row),
             "downsample": _jsonsafe(downsample),
+            "time_index_source": tidx_var or "row order",
             "downsample_lowpass": "centered rolling mean, window = downsample" if downsample > 1 else None,
             "embed_lag": _jsonsafe(lag),
             "embed_order": _jsonsafe(order),
@@ -490,7 +531,8 @@ def _coderepr(x):
 
 def generate_code(source_code, selected_vars, zscore_on, start_row, end_row, downsample,
                    lag, order, k, d, texclude, maxdistprct, maxdist, reciprocal,
-                   color_var, time_var, nodesizemode, labelmethod, show_recurrence):
+                   color_var, time_var, nodesizemode, labelmethod, show_recurrence,
+                   tidx_var=None):
     end_row_repr = "None" if end_row is None else repr(end_row)
     lines = [
         "# Temporal Mapper -- generated by the Streamlit app's code view",
@@ -506,15 +548,16 @@ def generate_code(source_code, selected_vars, zscore_on, start_row, end_row, dow
         f"start_row, end_row, downsample = {start_row!r}, {end_row_repr}, {downsample!r}",
         "end_row = (len(dat) - 1) if end_row is None else min(end_row, len(dat) - 1)",
         "window = dat.iloc[start_row:end_row + 1]",
-        "missing_mask = window[selected_vars].isna().any(axis=1)",
-        "clean = window[~missing_mask]",
+        "# decimate on the ORIGINAL row grid, not on the post-removal list:",
+        "# striding surviving rows slides later samples off the true time grid",
         "if downsample > 1:",
-        "    smoothed = clean[selected_vars].rolling(window=downsample, center=True, min_periods=1).mean()",
-        "    values = smoothed.iloc[::downsample].to_numpy()",
-        "    base_rows = clean.index.to_numpy()[::downsample]",
+        "    smoothed = window[selected_vars].rolling(window=downsample, center=True, min_periods=1).mean()",
+        "    grid = smoothed.iloc[::downsample]  # rolling().mean() skips NaNs",
         "else:",
-        "    values = clean[selected_vars].to_numpy()",
-        "    base_rows = clean.index.to_numpy()",
+        "    grid = window[selected_vars]",
+        "keep = ~grid.isna().any(axis=1)",
+        "values = grid[keep].to_numpy()",
+        "base_rows = grid.index.to_numpy()[keep.to_numpy()]",
         "",
     ]
     if zscore_on:
@@ -537,7 +580,19 @@ def generate_code(source_code, selected_vars, zscore_on, start_row, end_row, dow
         lines += ["n = n_raw", "X = X_raw"]
     lines += [
         "rows = base_rows[(n_raw - n):]",
-        "tidx = np.arange(n)",
+        "# tidx marks real time position. Decimation happened on the original grid,",
+        "# so this is integer-exact: consecutive samples step by 1 and a genuinely",
+        "# dropped point leaves a jump, stopping tknndigraph from fabricating a",
+        "# temporal edge across it.",
+    ]
+    if tidx_var:
+        lines += [
+            f"tidx = dat[{tidx_var!r}].to_numpy().astype('int64')[rows]",
+            "tidx = tidx - tidx.min()",
+        ]
+    else:
+        lines += ["tidx = (rows - rows[0]) // downsample"]
+    lines += [
         "",
         "D = cdist(X, X, metric='euclidean')",
         f"g, par = tknndigraph(D, {k!r}, tidx, time_exclude_range={texclude!r}, "
@@ -636,10 +691,31 @@ def main():
             help="A number, or 'last' for the final row.",
         )
         end_row = None if end_row_str.strip().lower() == "last" else int(end_row_str)
-        downsample = st.number_input(
-            "downsample (N)", min_value=1, value=DEFAULTS["downsample"], key="downsample",
-            help="Keep every Nth row; a centered rolling-mean lowpass is applied first to avoid aliasing.",
+
+        tidx_choice = st.selectbox(
+            "time index", ["(from row order)"] + st.session_state["numeric_vars"],
+            key="tidx_var",
+            help="Which samples count as temporally adjacent. Points are linked in time "
+                 "only when their index differs by exactly 1, so gaps in this column "
+                 "break the chain -- use it for data with real breaks (separate "
+                 "sessions/trials) or irregular sampling. Default derives it from row "
+                 "order.",
         )
+        tidx_var = None if tidx_choice == "(from row order)" else tidx_choice
+
+        downsample = st.number_input(
+            "downsample (N)", min_value=1,
+            value=1 if tidx_var else DEFAULTS["downsample"],
+            key="downsample", disabled=bool(tidx_var),
+            help=("Disabled while a time index column is chosen: that column describes "
+                  "the original sampling, so decimating under it would no longer match "
+                  "the samples kept."
+                  if tidx_var else
+                  "Keep every Nth row; a centered rolling-mean lowpass is applied first "
+                  "to avoid aliasing."),
+        )
+        if tidx_var:
+            downsample = 1
         col3, col4 = st.columns(2)
         lag = col3.number_input("embed lag", min_value=0, value=DEFAULTS["embed_lag"], key="embed_lag")
         order = col4.number_input("embed order", min_value=1, value=DEFAULTS["embed_order"], key="embed_order")
@@ -694,6 +770,7 @@ def main():
                     built = build_network(
                         df, tuple(selected_vars), zscore_on, start_row, end_row, downsample,
                         lag, order, k, d, texclude, maxdistprct, maxdist, reciprocal,
+                        tidx_var,
                     )
                     st.session_state["built"] = built
                 except ValueError as e:
@@ -703,10 +780,18 @@ def main():
     if "built" in st.session_state:
         built = st.session_state["built"]
         if built["n_dropped"] > 0:
-            st.warning(
-                f"Dropped {built['n_dropped']} of {built['n_window']} row(s) in the "
-                "selected range due to missing values in the selected variables."
-            )
+            # With downsampling the lowpass averages over whatever is present,
+            # so a missing row usually costs no sample at all -- only a grid
+            # point whose entire window is missing actually disappears. Say
+            # which happened rather than implying rows are always discarded.
+            msg = (f"{built['n_dropped']} of {built['n_window']} row(s) in the selected "
+                   "range have missing values in the selected variables.")
+            if built["n_grid_dropped"] > 0:
+                msg += (f" Dropped {built['n_grid_dropped']} sample(s), leaving a real "
+                        "gap in time — no temporal link is made across it.")
+            else:
+                msg += " The anti-aliasing average covered them, so no sample was lost."
+            st.warning(msg)
         st.success(f"Built network: {built['g_simp'].number_of_nodes()} nodes, "
                    f"{built['g_simp'].number_of_edges()} edges.")
         html, rec_fig, colorvar, colorlabel, title = render_network(
@@ -718,7 +803,7 @@ def main():
         code = generate_code(
             st.session_state["data_source_code"], selected_vars, zscore_on, start_row, end_row,
             downsample, lag, order, k, d, texclude, maxdistprct, maxdist, reciprocal,
-            color_var, time_var, nodesizemode, labelmethod, show_recurrence,
+            color_var, time_var, nodesizemode, labelmethod, show_recurrence, tidx_var,
         )
 
         with st.expander("Export / share"):
@@ -791,7 +876,7 @@ def main():
                 built, st.session_state["data_source"], st.session_state["data_source_code"],
                 selected_vars, zscore_on, start_row, end_row, downsample, lag, order,
                 k, d, texclude, maxdistprct, maxdist, reciprocal,
-                color_var, time_var, nodesizemode, labelmethod, show_recurrence,
+                color_var, time_var, nodesizemode, labelmethod, show_recurrence, tidx_var,
             )
             st.download_button(
                 "Parameters (.json)", data=params_json, file_name="params.json",

@@ -139,11 +139,15 @@ def test_missing_data_is_dropped_with_a_warning():
     assert not at.exception
 
     warnings = [w.value for w in at.warning]
-    assert any("Dropped" in w for w in warnings), \
+    assert any("missing values" in w for w in warnings), \
         f"expected a missing-data warning, got {warnings}"
-    msg = [w for w in warnings if "Dropped" in w][0]
-    assert f"Dropped {SAMPLE_MISSING_ROWS} of {SAMPLE_SLICE_ROWS} row(s)" in msg, \
+    msg = [w for w in warnings if "missing values" in w][0]
+    assert f"{SAMPLE_MISSING_ROWS} of {SAMPLE_SLICE_ROWS} row(s)" in msg, \
         f"warning should report the exact counts, got: {msg}"
+    # the default build is stride 1, so there is no averaging to absorb them
+    # and they really are dropped -- the message must say so
+    assert "Dropped" in msg and "gap in time" in msg, \
+        f"at downsample=1 the warning should report dropped samples, got: {msg}"
     assert any("Built network:" in s.value for s in at.success), \
         "dropping missing rows should let the build succeed, not abort it."
 
@@ -159,9 +163,13 @@ def test_no_missing_data_warning_when_data_is_clean(app, sample_df):
     assert built["n_dropped"] == 0
 
 
-def test_missing_rows_are_dropped_before_the_lowpass(app):
-    """A NaN must be removed *before* the downsampling lowpass, otherwise
-    the rolling mean would smear it across neighbouring samples."""
+def test_isolated_missing_row_is_absorbed_by_the_lowpass(app):
+    """An isolated NaN must not cost a sample when downsampling.
+
+    The decimated value is an average over its window, and pandas'
+    rolling mean skips NaN, so one missing input simply doesn't contribute
+    -- it neither poisons the average nor punches a hole in the time grid.
+    """
     n = 400
     df = pd.DataFrame({
         "x": np.sin(np.arange(n) / 9.0),
@@ -171,15 +179,165 @@ def test_missing_rows_are_dropped_before_the_lowpass(app):
     built = app.build_network(
         df, ("x", "y"), True, 0, None, 4, 0, 1, 3, 3.0, 1, 100.0, float("inf"), True
     )
-    assert built["n_dropped"] == 1
-    assert built["n_window"] == n
-    # the dropped source row must not appear among the retained rows
+    assert built["n_dropped"] == 1, "the missing source row should still be reported"
+    assert built["n_grid_dropped"] == 0, "no sample should be lost to one isolated NaN"
+    assert np.all(np.diff(built["tidx"]) == 1), "and the time grid must stay unbroken"
+
+
+def test_fully_missing_window_drops_the_sample(app):
+    """When every row feeding a decimated sample is missing there is nothing
+    to average, so that sample must be dropped and leave a real gap."""
+    n = 400
+    df = pd.DataFrame({
+        "x": np.sin(np.arange(n) / 9.0),
+        "y": np.cos(np.arange(n) / 9.0),
+    })
+    df.loc[98:103, "x"] = np.nan  # covers the whole window around grid point 100
+    built = app.build_network(
+        df, ("x", "y"), True, 0, None, 4, 0, 1, 3, 3.0, 1, 100.0, float("inf"), True
+    )
+    assert built["n_grid_dropped"] >= 1, "a fully-missing window must drop its sample"
+    assert (np.diff(built["tidx"]) > 1).any(), "and that must leave a gap in tidx"
     assert 100 not in set(built["rows"].tolist())
 
 
 # ------------------------------------------------ preprocessing semantics
 # Called directly rather than through AppTest: same code path, but each
 # AppTest build costs ~10-20s and these are pure input/output questions.
+
+def test_tidx_preserves_real_time_gaps(app):
+    """tidx must encode real time position, not array position.
+
+    tknndigraph links points as temporal neighbours iff their tidx differs
+    by exactly 1, so a plain arange would silently bridge a stretch of
+    dropped rows -- linking the samples either side of a gap as if they
+    were consecutive, which is precisely what tidx exists to prevent.
+    """
+    n = 60
+    df = pd.DataFrame({
+        "x": np.sin(np.arange(n) / 5.0),
+        "y": np.cos(np.arange(n) / 5.0),
+    })
+    df.loc[25:34, "x"] = np.nan  # a real 10-sample hole
+
+    built = app.build_network(
+        df, ("x", "y"), True, 0, None, 1, 0, 1, 3, 3.0, 1, 100.0, float("inf"), True
+    )
+    rows, tidx = built["rows"], built["tidx"]
+    pos = {int(r): i for i, r in enumerate(rows)}
+
+    # rows either side of the hole are 11 apart in real time, so their tidx
+    # must be too -- not adjacent
+    gap_jump = tidx[pos[35]] - tidx[pos[24]]
+    assert gap_jump == 11, f"tidx must preserve the real gap, got a jump of {gap_jump}"
+
+    # and contiguous stretches must still advance by exactly 1, or *no*
+    # temporal edges would be built at all
+    assert tidx[pos[23]] - tidx[pos[22]] == 1
+    assert tidx[pos[36]] - tidx[pos[35]] == 1
+
+    # the gap must actually suppress the temporal edge in the built graph:
+    # with a bridged tidx the two sides would land in one connected run
+    assert len(tidx) == len(rows)
+
+
+def test_tidx_is_unit_spaced_when_downsampling(app, sample_df):
+    """Downsampling by N means successive retained samples are N source
+    rows apart, but they are still *consecutive samples* -- tidx must step
+    by 1 or tknndigraph would build no temporal edges at all."""
+    built = app.build_network(
+        sample_df, ("tmax", "tmin", "prcp"), True, 0, 999, 5, 0, 1,
+        3, 3.0, 1, 100.0, float("inf"), True,
+    )
+    steps = np.diff(built["tidx"])
+    assert steps.min() >= 1, "tidx must be strictly increasing"
+    assert np.bincount(steps).argmax() == 1, \
+        "the typical tidx step under downsampling must be 1, not the downsample factor"
+
+
+def test_tidx_has_no_drift_artifacts_when_dropping_and_downsampling(app, sample_df):
+    """Dropping rows *and* downsampling together must not corrupt tidx.
+
+    Deriving tidx from an absolute offset -- rint((row - row[0]) / N) --
+    accumulates rounding drift past every dropped row, which produced
+    duplicate tidx values (two samples sharing a time index) and phantom
+    gaps at samples that were in fact evenly spaced. Steps must be measured
+    per-interval instead.
+    """
+    # the bundled slice has 6 scattered missing rows, so this combination
+    # is exactly the drift-prone case
+    built = app.build_network(
+        sample_df, ("tmax", "tmin", "prcp"), True, 0, None, 4, 0, 1,
+        3, 3.0, 30, 100.0, 0.5, True,
+    )
+    rows, tidx = built["rows"], built["tidx"]
+    steps = np.diff(tidx)
+
+    assert steps.min() >= 1, \
+        "tidx must strictly increase -- a 0 step means two samples share a time index."
+    assert len(set(tidx.tolist())) == len(tidx), "tidx values must be unique."
+
+    # every jump >1 must correspond to a genuinely larger source-row gap,
+    # not to rounding drift
+    row_gaps = np.diff(rows)
+    for i in np.where(steps > 1)[0]:
+        assert row_gaps[i] > built["downsample"], (
+            f"tidx jumped {steps[i]} at a source-row gap of only {row_gaps[i]} "
+            f"(downsample={built['downsample']}) -- that's a drift artifact."
+        )
+
+
+def test_user_supplied_tidx_column_is_used(app):
+    """A chosen time-index column must drive temporal adjacency, so its own
+    gaps (separate sessions, irregular sampling) break the chain."""
+    n = 120
+    t = np.arange(n) + (np.arange(n) >= 60) * 500  # a 500-step jump mid-way
+    df = pd.DataFrame({
+        "t": t,
+        "x": np.sin(np.arange(n) / 7.0),
+        "y": np.cos(np.arange(n) / 7.0),
+    })
+    built = app.build_network(
+        df, ("x", "y"), True, 0, None, 1, 0, 1, 3, 3.0, 1, 100.0, float("inf"), True,
+        tidx_var="t",
+    )
+    tidx = built["tidx"]
+    assert tidx[0] == 0
+    steps = np.diff(tidx)
+    assert (steps == 1).sum() == n - 2, "within a session, samples must step by 1"
+    # t runs ...58, 59, then 560 -- so the single break is a 501-step jump
+    assert steps.max() == 501, "the session break must survive as a large jump"
+    assert (steps > 1).sum() == 1, "there should be exactly one break"
+
+
+def test_user_supplied_tidx_rejects_downsampling_and_bad_columns(app):
+    n = 60
+    df = pd.DataFrame({
+        "t": np.arange(n),
+        "bad": np.r_[np.arange(n - 1), [0]].astype(float),  # not increasing
+        "frac": np.arange(n) + 0.5,                          # not whole numbers
+        "x": np.sin(np.arange(n) / 7.0),
+        "y": np.cos(np.arange(n) / 7.0),
+    })
+    common = dict(zscore_on=True, start_row=0, end_row=None, lag=0, order=1,
+                  k=3, d=3.0, texclude=1, maxdistprct=100.0,
+                  maxdist=float("inf"), reciprocal=True)
+
+    def build(col, downsample=1):
+        return app.build_network(
+            df, ("x", "y"), common["zscore_on"], common["start_row"], common["end_row"],
+            downsample, common["lag"], common["order"], common["k"], common["d"],
+            common["texclude"], common["maxdistprct"], common["maxdist"],
+            common["reciprocal"], tidx_var=col,
+        )
+
+    with pytest.raises(ValueError, match="Downsampling is not available"):
+        build("t", downsample=4)
+    with pytest.raises(ValueError, match="strictly increasing"):
+        build("bad")
+    with pytest.raises(ValueError, match="whole numbers"):
+        build("frac")
+
 
 def test_row_range_restricts_to_exactly_that_window(app, sample_df):
     built = app.build_network(

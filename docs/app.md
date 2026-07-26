@@ -22,12 +22,12 @@ through warm (red) and back. Nodes are draggable, the view zooms and pans, and
 hovering a node reports its member count and colour value.
 ///
 
-![The geodesic recurrence plot below the network.](assets/app-recurrence.png){ width="760" }
+![The geodesic recurrence plot below the network.](assets/app-recurrence.png){ width="620" }
 /// caption
-Below it, the geodesic recurrence plot, with the **Export / share** and **Show
-equivalent code** panels beneath. The repeating block structure is the same
-seasonal recurrence seen as a loop in the network above — bright bands mark
-times the system had to travel far around the loop to get from one to the other.
+Below the network, the geodesic recurrence plot for the same build. The
+repeating block structure is the same seasonal recurrence that appears as a
+loop above; bright bands mark times the system had to travel far around that
+loop to get from one to the other.
 ///
 
 ## Install and launch
@@ -77,6 +77,7 @@ and would dominate the distance computation if selected.
 | **Variables** | Which numeric columns define the system's state. |
 | **z-score** | On by default. Uses `ddof=1`, matching MATLAB's convention (see [Concepts](concepts.md)). |
 | **start row / end row** | Restrict to a window. 0-indexed, following this port's convention — *not* the MATLAB app's 1-indexed fields. `end row` accepts `last`. |
+| **time index** | Which column says who is temporally adjacent. Defaults to row order; pick a column for data with real breaks (separate sessions/trials) or irregular sampling. Choosing one disables downsampling — see below. |
 | **downsample (N)** | Keep every Nth row. A lowpass is applied first — see below. |
 | **embed lag / embed order** | Optional [delay embedding](quickstart.md#step-2-optional-delay-embedding). Order `1` skips it. |
 
@@ -94,15 +95,19 @@ recurrence plot. **Changing any of these re-renders the existing network
 rather than rebuilding it**, so it is cheap to click through them freely once
 a build has finished.
 
-## Two things handled for you
+## Things handled for you
 
-!!! note "Missing data is dropped, not ignored"
-    Rows with a missing value in any selected variable are removed before
-    building, and the app reports exactly how many. This matters more than it
-    sounds: `NaN` propagates through z-scoring and then through the entire
-    distance matrix, so an unremoved gap silently degrades the whole network
-    rather than failing loudly. Dropping happens *before* the downsampling
-    lowpass, so a gap cannot smear into neighbouring samples.
+!!! note "Missing data is handled, not ignored"
+    `NaN` propagates through z-scoring and then through the entire distance
+    matrix, so an unremoved gap silently degrades the whole network rather
+    than failing loudly. The app never lets one through, and reports what it
+    did.
+
+    At stride 1 a row with any missing selected variable is dropped, leaving a
+    real gap in time. When downsampling, each kept sample is an average over
+    its window and that average simply skips missing inputs — so an isolated
+    `NaN` costs no sample at all, and only a sample whose entire window is
+    missing is dropped.
 
     Calling `tknndigraph` directly on data containing `NaN` raises an error
     instead — the scripted API expects you to clean your own data.
@@ -111,6 +116,18 @@ a build has finished.
     `downsample (N) > 1` applies a centered rolling mean of width N before
     keeping every Nth row. Naively taking every Nth raw sample would alias
     high-frequency content into spurious low-frequency structure.
+
+!!! note "Real gaps stay gaps in time"
+    `tknndigraph`'s `tidx` argument is what tells the pipeline which samples
+    are *temporally* adjacent — it links two points only when their `tidx`
+    differs by exactly 1. The app derives `tidx` from elapsed position rather
+    than array position, so a genuine break in the data leaves a jump and no
+    temporal edge is fabricated across it.
+
+    Decimation happens on the **original** row grid, never on the
+    post-removal list. Striding surviving rows would slide every later sample
+    off the true time grid, inventing gaps at samples that were in fact
+    evenly spaced.
 
 ## Export / share
 
