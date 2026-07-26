@@ -287,6 +287,52 @@ def test_tidx_has_no_drift_artifacts_when_dropping_and_downsampling(app, sample_
         )
 
 
+@pytest.mark.parametrize(
+    "label, nan_slice, downsample, start_row, lag, order",
+    [
+        ("clean",                        None,       4, 0, 0, 1),
+        ("one grid point missing",       (98, 103),  4, 0, 0, 1),
+        ("several consecutive missing",  (98, 111),  4, 0, 0, 1),
+        ("first grid point missing",     (0, 5),     4, 0, 0, 1),
+        ("with delay embedding",         None,       4, 0, 10, 2),
+        ("offset start row, stride 3",   None,       3, 7, 0, 1),
+        ("no downsampling",              (98, 103),  1, 0, 0, 1),
+    ],
+)
+def test_tidx_matches_the_grid_under_downsampling(
+    app, label, nan_slice, downsample, start_row, lag, order
+):
+    """The core invariant, across every combination that touches it.
+
+    Retained rows must sit on the exact original decimation grid, and each
+    tidx step must equal its source-row step divided by the downsample
+    factor. That is what makes consecutive samples differ by exactly 1 (so
+    temporal edges exist at all) while a genuinely dropped sample leaves a
+    proportionally larger jump (so no edge is fabricated across it).
+    """
+    n = 400
+    df = pd.DataFrame({
+        "x": np.sin(np.arange(n) / 9.0),
+        "y": np.cos(np.arange(n) / 9.0),
+    })
+    if nan_slice is not None:
+        df.loc[nan_slice[0]:nan_slice[1], "x"] = np.nan
+
+    built = app.build_network(
+        df, ("x", "y"), True, start_row, None, downsample, lag, order,
+        3, 3.0, 1, 100.0, float("inf"), True,
+    )
+    rows, tidx = built["rows"], built["tidx"]
+
+    assert np.all((rows - rows[0]) % downsample == 0), \
+        f"[{label}] retained rows drifted off the decimation grid"
+    assert tidx[0] == 0, f"[{label}] tidx should start at 0"
+    assert len(set(tidx.tolist())) == len(tidx), f"[{label}] tidx values must be unique"
+    assert np.array_equal(np.diff(tidx), np.diff(rows) // downsample), \
+        f"[{label}] tidx steps must equal source-row steps / downsample"
+    assert np.diff(tidx).min() >= 1, f"[{label}] tidx must strictly increase"
+
+
 def test_user_supplied_tidx_column_is_used(app):
     """A chosen time-index column must drive temporal adjacency, so its own
     gaps (separate sessions, irregular sampling) break the chain."""
