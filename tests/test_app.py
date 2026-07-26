@@ -112,6 +112,29 @@ def test_sample_button_sits_below_the_uploader():
     assert len(at.sidebar.get("file_uploader")) == 1
 
 
+def test_every_input_control_explains_itself():
+    """Each control carries help text, and the data-format note is shown.
+
+    These are the app's only documentation at the point of use, so a control
+    added later without a `help=` should fail here rather than ship bare.
+    """
+    at = AppTest.from_file(APP_PATH, default_timeout=30).run()
+    _load_sample(at)
+    assert not at.exception
+
+    bare = []
+    for kind in ("selectbox", "number_input", "text_input", "checkbox", "multiselect"):
+        for w in at.sidebar.get(kind):
+            if not getattr(w, "help", None):
+                bare.append(f"{kind}:{w.label}")
+    assert not bare, f"controls with no help text: {bare}"
+
+    # the format note itself must be present and mention the essentials
+    body = " ".join(m.value for m in at.sidebar.markdown)
+    for expected in ("one row per time point", "numeric", "header row"):
+        assert expected in body.lower(), f"data-format note is missing '{expected}'"
+
+
 def test_sample_button_is_not_overridden_by_an_attached_upload(app):
     """Clicking "try sample data" while a file is attached must switch to
     the sample, and a later rerun must not flip it back.

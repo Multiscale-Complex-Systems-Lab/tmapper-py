@@ -60,6 +60,40 @@ DEFAULTS = {
 }
 
 
+DATA_FORMAT_HELP = """
+**A table of time series: one row per time point, in time order.**
+
+- **File** — `.csv` or `.txt`, comma-separated, with a header row of column names.
+- **Rows** — one time point each, already sorted in time. Row order *is* the time order.
+- **Columns** — one variable each. The ones you select together describe the
+  system's state at that moment.
+
+```
+Date,tmax,tmin,prcp     <- header row
+1990-01-01,31,-23,0     <- one time point
+1990-01-02,-3,-22,0
+```
+
+**Only numeric columns can be selected** — as build variables, for colouring,
+for the time axis, or as a time index. Text and date columns are read but
+can't currently be picked, so to use a timestamp, include it as a numeric
+column too (seconds, or a sample number).
+
+You don't need to clean the file first:
+
+- **Missing values** are handled automatically, and the app reports what it did.
+- A leading **unnamed index column** (what `to_csv()` writes without
+  `index=False`) is dropped — it's just a counter, and would otherwise
+  dominate the distance computation.
+- Sampling is assumed **evenly spaced**. If it isn't, or the recording has real
+  breaks in it, set a **time index** column under Variables & Preprocessing.
+
+Every pair of time points is compared, so memory grows with the *square* of the
+number of rows — long recordings need a row range or downsampling. The app
+refuses a selection that would be too large and tells you the figure.
+"""
+
+
 # ============================================================= data helpers
 
 def read_csv_smart(path_or_buffer):
@@ -689,8 +723,18 @@ def main():
         # button sits below it and is deliberately not full-width: as a
         # prominent full-width button on top it was getting clicked by
         # mistake by people who meant to upload their own file.
-        uploaded = st.file_uploader("Load a CSV file", type=["csv", "txt"])
-        sample_clicked = st.button("Try sample data")
+        with st.expander("What format should my data be in?"):
+            st.markdown(DATA_FORMAT_HELP)
+        uploaded = st.file_uploader(
+            "Load a CSV file", type=["csv", "txt"],
+            help="One row per time point, in time order, with a header row. "
+                 "See the format note above.",
+        )
+        sample_clicked = st.button(
+            "Try sample data",
+            help="Load the bundled East Lansing daily weather set (a recent slice), "
+                 "to see the pipeline work before using your own data.",
+        )
 
         # Identify the upload by name+size so it loads once, when it actually
         # changes. Keying off data_source instead meant the uploader re-fired
@@ -738,12 +782,22 @@ def main():
         selected_vars = st.multiselect(
             "Variables", st.session_state["numeric_vars"],
             default=st.session_state["selected_vars"], key="selected_vars",
+            help="The columns that together define the system's state at each time "
+                 "point. Distances between time points are computed across these.",
         )
-        zscore_on = st.checkbox("z-score variables", value=DEFAULTS["zscore"], key="zscore")
+        zscore_on = st.checkbox(
+            "z-score variables", value=DEFAULTS["zscore"], key="zscore",
+            help="Standardise each variable before measuring distances, so one "
+                 "high-variance or large-unit column doesn't dominate. Uses ddof=1, "
+                 "matching MATLAB's zscore.",
+        )
         col1, col2 = st.columns(2)
         start_row = col1.number_input(
             "start row (0-indexed)", min_value=0, max_value=max(len(df) - 1, 0),
             value=DEFAULTS["start_row"], key="start_row",
+            help="First row to include, counting from 0. Use this with 'end row' to "
+                 "analyse a sub-range, or to cut a long recording down to a workable "
+                 "size.",
         )
         end_row_str = col2.text_input(
             "end row", value="last", key="end_row_str",
@@ -769,42 +823,106 @@ def main():
                  "column is evenly sampled (gaps are fine).",
         )
         col3, col4 = st.columns(2)
-        lag = col3.number_input("embed lag", min_value=0, value=DEFAULTS["embed_lag"], key="embed_lag")
-        order = col4.number_input("embed order", min_value=1, value=DEFAULTS["embed_order"], key="embed_order")
+        lag = col3.number_input(
+            "embed lag", min_value=0, value=DEFAULTS["embed_lag"], key="embed_lag",
+            help="Delay embedding: how many samples back each extra copy of the state "
+                 "is taken from. Ignored when embed order is 1.",
+        )
+        order = col4.number_input(
+            "embed order", min_value=1, value=DEFAULTS["embed_order"], key="embed_order",
+            help="How many lagged copies of the state to stack. Order 1 (default) means "
+                 "no embedding. Use this when the raw variables are too few to separate "
+                 "distinct states -- it lifts the data into a higher-dimensional space "
+                 "where cyclic structure becomes visible. Costs (order-1)*lag samples.",
+        )
 
         st.header("Network Parameters")
         col5, col6 = st.columns(2)
-        k = col5.number_input("k (neighbors)", min_value=1, value=DEFAULTS["k"], key="k")
-        d = col6.number_input("d (compression)", min_value=0.0, value=DEFAULTS["d"], key="d")
-        texclude = st.number_input("texclude", min_value=1, value=DEFAULTS["texclude"], key="texclude")
+        k = col5.number_input(
+            "k (neighbors)", min_value=1, value=DEFAULTS["k"], key="k",
+            help="Max spatial neighbours each time point may link to. This is the main "
+                 "knob: it largely determines the network's topology, so explore it "
+                 "first. Larger k gives a denser graph.",
+        )
+        d = col6.number_input(
+            "d (compression)", min_value=0.0, value=DEFAULTS["d"], key="d",
+            help="Compression threshold. Time points within this geodesic distance of "
+                 "each other collapse into a single node, so loops shorter than d are "
+                 "absorbed. Larger d gives a coarser network.",
+        )
+        texclude = st.number_input(
+            "texclude", min_value=1, value=DEFAULTS["texclude"], key="texclude",
+            help="How many following time points count as temporal neighbours and are "
+                 "therefore barred from also counting as spatial neighbours -- this "
+                 "stops adjacent moments being read as 'recurrence'. Set it from your "
+                 "sampling density: the number of samples over which the system hasn't "
+                 "really moved. Values under 10 are typical.",
+        )
         col7, col8 = st.columns(2)
         maxdistprct = col7.number_input(
-            "max dist %ile", min_value=0.0, max_value=100.0, value=DEFAULTS["maxdistprct"], key="maxdistprct"
+            "max dist %ile", min_value=0.0, max_value=100.0,
+            value=DEFAULTS["maxdistprct"], key="maxdistprct",
+            help="Neighbour cutoff as a percentile of all pairwise distances (100 = no "
+                 "cutoff). Optional -- useful to stop outliers being linked as "
+                 "neighbours.",
         )
         # st.number_input rejects inf outright (enforces a finite JS-float
         # bound), so this is a text field with an "inf" sentinel instead --
         # same convention as "end row" above.
-        maxdist_str = col8.text_input("max dist", value="inf", key="maxdist_str")
+        maxdist_str = col8.text_input(
+            "max dist", value="inf", key="maxdist_str",
+            help="The same cutoff as an absolute distance; 'inf' means no cutoff. When "
+                 "both are set, the stricter of the two applies.",
+        )
         try:
             maxdist = np.inf if maxdist_str.strip().lower() == "inf" else float(maxdist_str)
         except ValueError:
             st.error(f"max dist must be a number or 'inf', got {maxdist_str!r}.")
             return
-        reciprocal = st.checkbox("reciprocal", value=DEFAULTS["reciprocal"], key="reciprocal")
+        reciprocal = st.checkbox(
+            "reciprocal", value=DEFAULTS["reciprocal"], key="reciprocal",
+            help="Require the nearest-neighbour relation to hold in both directions "
+                 "(x is a neighbour of y AND y of x). The stricter, recommended "
+                 "setting for directed graphs.",
+        )
 
         st.header("Plot Options")
         color_options = ["(row index)"] + st.session_state["numeric_vars"]
-        color_var = st.selectbox("Color by", color_options, key="color_var")
-        time_var = st.selectbox("Time axis", color_options, key="time_var")
-        nodesizemode = st.selectbox("Node size", ["log", "rank", "original"], key="nodesizemode")
-        labelmethod = st.selectbox("Label method", ["mode", "mean", "median", "none"], key="labelmethod")
+        color_var = st.selectbox(
+            "Color by", color_options, key="color_var",
+            help="Value used to colour nodes. Each node aggregates its member time "
+                 "points using the label method below.",
+        )
+        time_var = st.selectbox(
+            "Time axis", color_options, key="time_var",
+            help="Values labelling the recurrence plot's axes. Only affects that plot.",
+        )
+        nodesizemode = st.selectbox(
+            "Node size", ["log", "rank", "original"], key="nodesizemode",
+            help="How a node's member count maps to marker size. Node size reflects how "
+                 "long the system dwells in that state, so counts span a wide range -- "
+                 "'log' or 'rank' usually read better than 'original'.",
+        )
+        labelmethod = st.selectbox(
+            "Label method", ["mode", "mean", "median", "none"], key="labelmethod",
+            help="How each node's colour is aggregated from its member time points. "
+                 "Use 'mode' for categorical labels, 'mean'/'median' for continuous "
+                 "values, 'none' for a single flat colour.",
+        )
         show_recurrence = st.checkbox(
-            "Show recurrence plot", value=DEFAULTS["show_recurrence"], key="show_recurrence"
+            "Show recurrence plot", value=DEFAULTS["show_recurrence"], key="show_recurrence",
+            help="Also draw the geodesic recurrence plot: for every pair of time points, "
+                 "the shortest path between their nodes in the network.",
         )
 
         col9, col10 = st.columns(2)
-        build_clicked = col9.button("Build Network", type="primary", use_container_width=True)
-        if col10.button("Reset", use_container_width=True):
+        build_clicked = col9.button(
+            "Build Network", type="primary", use_container_width=True,
+            help="Run the pipeline with the settings above. Plot Options re-render "
+                 "without needing this again.",
+        )
+        if col10.button("Reset", use_container_width=True,
+                        help="Restore every parameter to its default. Keeps your loaded data."):
             st.session_state["_do_reset"] = True
             st.rerun()
 
