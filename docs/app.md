@@ -11,8 +11,22 @@ Everything on the [Concepts](concepts.md) page about what the parameters
 
 ![The app after building a network from the bundled sample data.](assets/app-screenshot.png)
 /// caption
-The app after a build: the missing-data notice, the result summary, and the
-interactive network below them.
+After a build: the missing-data notice and the result summary, above the plots.
+///
+
+![The interactive network, coloured by daily maximum temperature.](assets/app-network.png)
+/// caption
+The interactive network, built from the bundled weather data and coloured by
+`tmax`. The seasonal cycle shows up directly as a loop running cold (blue)
+through warm (red) and back. Nodes are draggable, the view zooms and pans, and
+hovering a node reports its member count and colour value.
+///
+
+![The geodesic recurrence plot below the network.](assets/app-recurrence.png)
+/// caption
+Below it, the geodesic recurrence plot, with the **Export / share** and **Show
+equivalent code** panels beneath. The repeating block structure is the same
+seasonal recurrence seen as a loop in the network above.
 ///
 
 ## Install and launch
