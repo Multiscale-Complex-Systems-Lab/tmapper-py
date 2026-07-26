@@ -106,6 +106,31 @@ def set_data(df, source_label, source_code):
     st.session_state["selected_vars"] = numvars
 
 
+# ==================================================== pre-flight size guard
+
+MAX_WINDOW_ROWS = 8000  # cdist's pairwise distance matrix is O(N^2) in memory
+
+
+def oversized_window_message(window_rows, downsample):
+    """Error text if a full pairwise distance matrix for this row range
+    would be unreasonably large, else None.
+
+    cdist allocates window_rows^2 float64s, so an untrimmed real dataset
+    can ask for tens of GB -- the bundled sample's full 57709 rows would
+    need ~25 GB. Better to refuse with a number the user can act on than
+    to let numpy raise (or the machine swap). Only applies when
+    downsample == 1, since downsampling is itself the fix.
+    """
+    if window_rows > MAX_WINDOW_ROWS and downsample == 1:
+        return (
+            f"The selected row range has {window_rows} rows -- computing a full "
+            f"pairwise distance matrix at this size needs "
+            f"~{8 * window_rows ** 2 / 1e9:.1f} GB of memory. Restrict the row range "
+            f"(start row/end row) or set downsample (N) > 1 first."
+        )
+    return None
+
+
 # ========================================================= expensive: build
 
 @st.cache_data(show_spinner=False)
@@ -608,20 +633,14 @@ def main():
             st.session_state["_do_reset"] = True
             st.rerun()
 
-    MAX_WINDOW_ROWS = 8000  # cdist's pairwise distance matrix is O(N^2) in memory
-
     if build_clicked:
         resolved_end = (len(df) - 1) if end_row is None else min(end_row, len(df) - 1)
         window_rows = resolved_end - start_row + 1
+        oversized = oversized_window_message(window_rows, downsample)
         if not selected_vars:
             st.error("Select at least one variable to build the network from.")
-        elif window_rows > MAX_WINDOW_ROWS and downsample == 1:
-            st.error(
-                f"The selected row range has {window_rows} rows -- computing a full "
-                f"pairwise distance matrix at this size needs "
-                f"~{8 * window_rows**2 / 1e9:.1f} GB of memory. Restrict the row range "
-                f"(start row/end row) or set downsample (N) > 1 first."
-            )
+        elif oversized:
+            st.error(oversized)
         else:
             with st.spinner("Building network..."):
                 try:

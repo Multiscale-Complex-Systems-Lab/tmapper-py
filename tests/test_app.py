@@ -1,12 +1,23 @@
-"""Smoke tests for app/streamlit_app.py, run headlessly via Streamlit's
-AppTest (no browser needed). Mirrors the MATLAB GUI's tests/test_gui_app.m
-in spirit: exercise the real app object end to end rather than testing the
-pipeline logic in isolation."""
+"""Tests for app/streamlit_app.py, run headlessly via Streamlit's AppTest
+(no browser needed). Mirrors the MATLAB GUI's tests/test_gui_app.m in
+spirit: exercise the real app end to end rather than testing the pipeline
+logic in isolation.
 
+Split by cost: anything about *widget wiring / error surfacing* goes
+through AppTest (each such run rebuilds a real network, ~10-20s), while
+parameter *semantics* are checked by calling build_network and the export
+builders directly -- same code path, a fraction of the runtime.
+"""
+
+import importlib.util
+import io
+import json as _json
 import re
+import zipfile
 from pathlib import Path
 
 import networkx as nx
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -14,11 +25,53 @@ pytest.importorskip("streamlit")
 from streamlit.testing.v1 import AppTest
 
 APP_PATH = str(Path(__file__).resolve().parent.parent / "app" / "streamlit_app.py")
+REPO_ROOT = Path(APP_PATH).resolve().parent.parent
+
+# the bundled sample's recent slice contains exactly 6 rows with a missing
+# value among tmax/tmin/prcp -- real data, so the missing-data path below
+# is exercised against the genuine article rather than a synthetic stub
+SAMPLE_MISSING_ROWS = 6
+SAMPLE_SLICE_ROWS = 3826
+
+
+@pytest.fixture(scope="module")
+def app():
+    """The app module itself, for calling its functions directly."""
+    spec = importlib.util.spec_from_file_location("tm_app", APP_PATH)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.fixture(scope="module")
+def sample_df(app):
+    df, _dropped = app.read_csv_smart(REPO_ROOT / "sampledata" / "EL_temp.csv")
+    return df.iloc[53883:].reset_index(drop=True)
 
 
 def _load_sample(at):
     at.sidebar.button[0].click().run()  # "Load sample data"
     return at
+
+
+def _build(at):
+    [b for b in at.sidebar.button if b.label == "Build Network"][0].click().run()
+    return at
+
+
+def _counts(at):
+    """(nodes, edges) as reported in the app's success banner."""
+    status = [s.value for s in at.success if "Built network:" in s.value][0]
+    m = re.search(r"Built network: (\d+) nodes, (\d+) edges", status)
+    return int(m.group(1)), int(m.group(2))
+
+
+def _num_input(at, label):
+    return [n for n in at.sidebar.number_input if n.label == label][0]
+
+
+def _text_input(at, label):
+    return [t for t in at.sidebar.text_input if t.label == label][0]
 
 
 def test_initial_load_prompts_for_data():
@@ -43,49 +96,246 @@ def test_load_sample_data_populates_variables():
 def test_build_network_succeeds_with_defaults():
     at = AppTest.from_file(APP_PATH, default_timeout=60).run()
     _load_sample(at)
-    at.sidebar.button(key="k").set_value(3) if False else None  # placeholder, no-op
-    # click "Build Network" (the primary button in the sidebar)
-    build_button = [b for b in at.sidebar.button if b.label == "Build Network"][0]
-    build_button.click().run()
+    _build(at)
     assert not at.exception
-    assert any("Built network:" in s.value for s in at.success)
+    nodes, edges = _counts(at)
+    assert nodes > 0 and edges > 0
 
 
 def test_build_network_rejects_no_variables_selected():
     at = AppTest.from_file(APP_PATH, default_timeout=60).run()
     _load_sample(at)
     at.sidebar.multiselect[0].set_value([]).run()
-    build_button = [b for b in at.sidebar.button if b.label == "Build Network"][0]
-    build_button.click().run()
+    _build(at)
     assert not at.exception
     assert any("Select at least one variable" in e.value for e in at.error)
 
 
-def test_plot_option_change_does_not_error_and_reuses_cached_network():
+def test_plot_option_change_rerenders_without_rebuilding():
+    """Changing a Plot Option must re-render the *cached* network, not
+    rebuild it -- so the reported node/edge counts must be unchanged."""
     at = AppTest.from_file(APP_PATH, default_timeout=60).run()
     _load_sample(at)
-    build_button = [b for b in at.sidebar.button if b.label == "Build Network"][0]
-    build_button.click().run()
-    assert any("Built network:" in s.value for s in at.success)
+    _build(at)
+    before = _counts(at)
 
-    node_size_select = [s for s in at.sidebar.selectbox if s.label == "Node size"][0]
-    node_size_select.set_value("rank").run()
+    [s for s in at.sidebar.selectbox if s.label == "Node size"][0].set_value("rank").run()
     assert not at.exception
-    # network is still reported as built (re-rendered from the cached
-    # network, not rebuilt -- Build Network was never clicked again)
-    assert any("Built network:" in s.value for s in at.success)
+    assert _counts(at) == before, \
+        "a plot-only change must not alter the network (it should reuse the cached build)."
+
+    [s for s in at.sidebar.selectbox if s.label == "Label method"][0].set_value("mean").run()
+    assert not at.exception
+    assert _counts(at) == before
 
 
 def test_missing_data_is_dropped_with_a_warning():
+    """The bundled sample slice really does contain missing values, so the
+    warning must appear with the exact count -- and the build must still
+    succeed rather than being poisoned by the NaNs."""
     at = AppTest.from_file(APP_PATH, default_timeout=60).run()
     _load_sample(at)
-    build_button = [b for b in at.sidebar.button if b.label == "Build Network"][0]
-    build_button.click().run()
+    _build(at)
     assert not at.exception
-    # EL_temp.csv (rmmissing'd upstream in the MATLAB demo) may or may not
-    # contain gaps on its own; this just confirms the app doesn't crash
-    # and reports a coherent state either way.
+
+    warnings = [w.value for w in at.warning]
+    assert any("Dropped" in w for w in warnings), \
+        f"expected a missing-data warning, got {warnings}"
+    msg = [w for w in warnings if "Dropped" in w][0]
+    assert f"Dropped {SAMPLE_MISSING_ROWS} of {SAMPLE_SLICE_ROWS} row(s)" in msg, \
+        f"warning should report the exact counts, got: {msg}"
+    assert any("Built network:" in s.value for s in at.success), \
+        "dropping missing rows should let the build succeed, not abort it."
+
+
+def test_no_missing_data_warning_when_data_is_clean(app, sample_df):
+    """Guard against the warning firing spuriously: a clean frame must
+    report zero dropped rows."""
+    clean = sample_df.dropna(subset=["tmax", "tmin", "prcp"]).reset_index(drop=True)
+    built = app.build_network(
+        clean, ("tmax", "tmin", "prcp"), True, 0, None, 8, 0, 1,
+        3, 3.0, 1, 100.0, float("inf"), True,
+    )
+    assert built["n_dropped"] == 0
+
+
+def test_missing_rows_are_dropped_before_the_lowpass(app):
+    """A NaN must be removed *before* the downsampling lowpass, otherwise
+    the rolling mean would smear it across neighbouring samples."""
+    n = 400
+    df = pd.DataFrame({
+        "x": np.sin(np.arange(n) / 9.0),
+        "y": np.cos(np.arange(n) / 9.0),
+    })
+    df.loc[100, "x"] = np.nan
+    built = app.build_network(
+        df, ("x", "y"), True, 0, None, 4, 0, 1, 3, 3.0, 1, 100.0, float("inf"), True
+    )
+    assert built["n_dropped"] == 1
+    assert built["n_window"] == n
+    # the dropped source row must not appear among the retained rows
+    assert 100 not in set(built["rows"].tolist())
+
+
+# ------------------------------------------------ preprocessing semantics
+# Called directly rather than through AppTest: same code path, but each
+# AppTest build costs ~10-20s and these are pure input/output questions.
+
+def test_row_range_restricts_to_exactly_that_window(app, sample_df):
+    built = app.build_network(
+        sample_df, ("tmax", "tmin", "prcp"), True, 100, 400, 1, 0, 1,
+        3, 3.0, 1, 100.0, float("inf"), True,
+    )
+    rows = built["rows"]
+    assert rows.min() >= 100 and rows.max() <= 400
+    assert built["n_window"] == 301  # inclusive of both endpoints
+
+
+def test_end_row_none_means_last_row(app, sample_df):
+    built = app.build_network(
+        sample_df, ("tmax", "tmin", "prcp"), True, 3000, None, 1, 0, 1,
+        3, 3.0, 1, 100.0, float("inf"), True,
+    )
+    assert built["n_window"] == len(sample_df) - 3000
+
+
+def test_downsample_keeps_every_nth_retained_row(app, sample_df):
+    full = app.build_network(
+        sample_df, ("tmax", "tmin", "prcp"), True, 0, 999, 1, 0, 1,
+        3, 3.0, 1, 100.0, float("inf"), True,
+    )
+    ds = app.build_network(
+        sample_df, ("tmax", "tmin", "prcp"), True, 0, 999, 5, 0, 1,
+        3, 3.0, 1, 100.0, float("inf"), True,
+    )
+    assert len(ds["tidx"]) == int(np.ceil(len(full["tidx"]) / 5))
+    assert ds["downsample"] == 5
+
+
+def test_downsample_applies_an_anti_aliasing_lowpass(app):
+    """Downsampling must smooth before striding, not pick raw every-Nth
+    samples -- otherwise high-frequency content aliases into spurious
+    low-frequency structure.
+
+    Verified by equivalence: the app's downsample=4 build must match a
+    build on a *manually pre-smoothed then strided* frame, and must NOT
+    match one on raw strided samples.
+    """
+    n = 600
+    rng = np.random.default_rng(0)
+    # noisy on purpose: smoothing vs raw striding diverge sharply, so the
+    # inequality below can't pass by coincidence
+    df = pd.DataFrame({"x": rng.normal(size=n), "y": rng.normal(size=n)})
+    kw = dict(zscore_on=True, lag=0, order=1, k=3, d=3.0, texclude=1,
+              maxdistprct=100.0, maxdist=float("inf"), reciprocal=True)
+
+    def counts(frame, downsample):
+        b = app.build_network(
+            frame, ("x", "y"), kw["zscore_on"], 0, None, downsample, kw["lag"], kw["order"],
+            kw["k"], kw["d"], kw["texclude"], kw["maxdistprct"], kw["maxdist"], kw["reciprocal"],
+        )
+        return b["g_simp"].number_of_nodes(), b["g_simp"].number_of_edges()
+
+    app_downsampled = counts(df, 4)
+
+    smoothed_first = df.rolling(4, center=True, min_periods=1).mean().iloc[::4].reset_index(drop=True)
+    raw_strided = df.iloc[::4].reset_index(drop=True)
+
+    assert app_downsampled == counts(smoothed_first, 1), \
+        "downsample=4 should equal building on a pre-smoothed, strided frame."
+    assert app_downsampled != counts(raw_strided, 1), \
+        "downsample=4 must NOT equal naive every-Nth striding (no lowpass applied)."
+
+
+def test_delay_embedding_shortens_the_series_by_lag_times_order(app, sample_df):
+    plain = app.build_network(
+        sample_df, ("tmax",), True, 0, 999, 1, 0, 1,
+        3, 3.0, 1, 100.0, float("inf"), True,
+    )
+    embedded = app.build_network(
+        sample_df, ("tmax",), True, 0, 999, 1, 30, 3,
+        3, 3.0, 1, 100.0, float("inf"), True,
+    )
+    # order=3, lag=30 consumes (order-1)*lag = 60 samples
+    assert len(embedded["tidx"]) == len(plain["tidx"]) - 60
+    assert embedded["order"] == 3 and embedded["lag"] == 30
+
+
+def test_invalid_range_and_embedding_are_rejected(app, sample_df):
+    with pytest.raises(ValueError, match="greater than or equal to start row"):
+        app.build_network(
+            sample_df, ("tmax",), True, 500, 100, 1, 0, 1,
+            3, 3.0, 1, 100.0, float("inf"), True,
+        )
+    with pytest.raises(ValueError, match="need at least 2"):
+        app.build_network(
+            sample_df, ("tmax",), True, 10, 10, 1, 0, 1,
+            3, 3.0, 1, 100.0, float("inf"), True,
+        )
+    with pytest.raises(ValueError, match="Embed lag must be at least 1"):
+        app.build_network(
+            sample_df, ("tmax",), True, 0, 500, 1, 0, 2,
+            3, 3.0, 1, 100.0, float("inf"), True,
+        )
+    with pytest.raises(ValueError, match="Embed lag/order too large"):
+        app.build_network(
+            sample_df, ("tmax",), True, 0, 100, 1, 500, 2,
+            3, 3.0, 1, 100.0, float("inf"), True,
+        )
+
+
+# --------------------------------------------------- UI guards & sentinels
+
+def test_memory_guard_blocks_an_oversized_row_range(app):
+    """The untrimmed sample (57709 rows) would need a ~25 GB distance
+    matrix; the guard must refuse with an actionable number rather than
+    letting cdist attempt the allocation."""
+    # under the limit, or downsampled -> allowed
+    assert app.oversized_window_message(3826, 1) is None
+    assert app.oversized_window_message(app.MAX_WINDOW_ROWS, 1) is None
+    assert app.oversized_window_message(57709, 4) is None, \
+        "downsampling is the fix, so the guard must not fire when it's on."
+
+    msg = app.oversized_window_message(57709, 1)
+    assert msg is not None
+    assert "57709 rows" in msg
+    assert "GB of memory" in msg
+    # 57709^2 * 8 bytes ~= 26.6 GB -- the figure must be real, not a guess
+    assert "26.6 GB" in msg, msg
+    assert "downsample" in msg, "the message should say how to fix it."
+
+
+def test_invalid_max_dist_text_is_reported_not_crashed():
+    at = AppTest.from_file(APP_PATH, default_timeout=60).run()
+    _load_sample(at)
+    _text_input(at, "max dist").set_value("not-a-number").run()
+    assert not at.exception, "a bad numeric entry must surface as an error, not an exception."
+    assert any("max dist must be a number" in e.value for e in at.error)
+
+
+def test_max_dist_and_end_row_sentinels_are_accepted():
+    at = AppTest.from_file(APP_PATH, default_timeout=60).run()
+    _load_sample(at)
+    _text_input(at, "max dist").set_value("inf").run()
+    _text_input(at, "end row").set_value("last").run()
+    assert not at.exception
+    _build(at)
+    assert not at.exception
     assert any("Built network:" in s.value for s in at.success)
+
+
+def test_reset_also_restores_plot_options():
+    at = AppTest.from_file(APP_PATH, default_timeout=60).run()
+    _load_sample(at)
+    [s for s in at.sidebar.selectbox if s.label == "Node size"][0].set_value("original").run()
+    [s for s in at.sidebar.selectbox if s.label == "Label method"][0].set_value("median").run()
+    _text_input(at, "max dist").set_value("0.5").run()
+
+    [b for b in at.sidebar.button if b.label == "Reset"][0].click().run()
+    assert not at.exception
+    assert [s for s in at.sidebar.selectbox if s.label == "Node size"][0].value == "log"
+    assert [s for s in at.sidebar.selectbox if s.label == "Label method"][0].value == "mode"
+    assert _text_input(at, "max dist").value == "inf"
 
 
 def test_export_panel_offers_downloadable_artifacts():

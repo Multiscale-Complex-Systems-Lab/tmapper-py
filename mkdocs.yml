@@ -93,5 +93,6 @@ nav:
   - Home: index.md
   - Installation: installation.md
   - Quickstart: quickstart.md
+  - Interactive App: app.md
   - Concepts & coming from MATLAB: concepts.md
   - API Reference: api.md

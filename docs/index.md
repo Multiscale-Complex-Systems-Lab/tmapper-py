@@ -61,6 +61,7 @@ can also be explored as a draggable/zoomable/hoverable HTML page via
 
 - **[Installation](installation.md)** — install the package and check dependencies.
 - **[Quickstart](quickstart.md)** — build your first transition network end to end, reproducing the figure above.
+- **[Interactive App](app.md)** — the same pipeline point-and-click in your browser, with figure and data exports.
 - **[Concepts & coming from MATLAB](concepts.md)** — what the nodes, edges, and loops mean, and how the Python API maps onto the MATLAB one.
 - **[API Reference](api.md)** — full documentation for every function, generated from the source.
 
