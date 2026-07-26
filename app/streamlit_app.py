@@ -92,6 +92,27 @@ def numeric_columns(df):
     return [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
 
 
+def resolve_data_action(sample_clicked, upload_token, claimed_token):
+    """Which data source, if any, to load on this run: 'sample', 'upload'
+    or None.
+
+    An explicit click always wins. An upload loads only when it is new --
+    identified by a name+size token the caller then claims. Keying off the
+    loaded *data source* instead (the earlier approach) made the uploader
+    re-fire on every rerun where anything else was loaded, silently
+    reloading an attached file over a sample the user had just chosen.
+
+    Split out as a plain function because Streamlit's AppTest cannot
+    simulate a file upload at all, so this is the only way to get the
+    branch under test.
+    """
+    if sample_clicked:
+        return "sample"
+    if upload_token is not None and upload_token != claimed_token:
+        return "upload"
+    return None
+
+
 def set_data(df, source_label, source_code):
     """Register a newly-loaded table, invalidating any cached network and
     resetting variable selection -- mirrors TemporalMapperApp.loadData.
@@ -663,7 +684,24 @@ def main():
 
     with st.sidebar:
         st.header("Data")
-        if st.button("Load sample data", use_container_width=True):
+
+        # Your own data is the primary action, so it goes first. The sample
+        # button sits below it and is deliberately not full-width: as a
+        # prominent full-width button on top it was getting clicked by
+        # mistake by people who meant to upload their own file.
+        uploaded = st.file_uploader("Load a CSV file", type=["csv", "txt"])
+        sample_clicked = st.button("Try sample data")
+
+        # Identify the upload by name+size so it loads once, when it actually
+        # changes. Keying off data_source instead meant the uploader re-fired
+        # on every rerun where something else had been loaded -- which
+        # silently undid the sample button whenever a file was attached.
+        upload_token = None if uploaded is None else (uploaded.name, uploaded.size)
+        action = resolve_data_action(
+            sample_clicked, upload_token, st.session_state.get("_upload_token")
+        )
+
+        if action == "sample":
             # the bundled CSV is the *full* historical daily record (57709
             # rows) -- same recent-slice trim as this project's Quickstart/
             # tmapper_demo.m (dat.iloc[53883:]), since the untrimmed file
@@ -676,8 +714,10 @@ def main():
                 src.append("dat = dat.drop(columns=dat.columns[0])  # stray unnamed index column")
             src.append("dat = dat.iloc[53883:].reset_index(drop=True)  # recent slice, as in the Quickstart")
             set_data(sample_df, f"sample data ({SAMPLE_DATA_PATH.name}, recent slice)", "\n".join(src))
-        uploaded = st.file_uploader("...or load a CSV file", type=["csv", "txt"])
-        if uploaded is not None and st.session_state.get("data_source") != f"uploaded: {uploaded.name}":
+            # claim the attached upload (if any) so it doesn't reload over this
+            st.session_state["_upload_token"] = upload_token
+        elif action == "upload":
+            st.session_state["_upload_token"] = upload_token
             up_df, dropped_col = read_csv_smart(uploaded)
             # only the filename is available (Streamlit uploads are
             # in-memory), so the generated line assumes the file sits in

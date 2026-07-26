@@ -50,7 +50,9 @@ def sample_df(app):
 
 
 def _load_sample(at):
-    at.sidebar.button[0].click().run()  # "Load sample data"
+    # by label, not position: the sample button was moved below the file
+    # uploader so it stops catching clicks meant for "load my own data"
+    [b for b in at.sidebar.button if b.label == "Try sample data"][0].click().run()
     return at
 
 
@@ -91,6 +93,53 @@ def test_load_sample_data_populates_variables():
     multiselects = at.sidebar.multiselect
     assert len(multiselects) == 1
     assert set(multiselects[0].value) == {"tmax", "tmin", "prcp"}
+
+
+def test_sample_button_sits_below_the_uploader():
+    """The file uploader is the primary action and must come first.
+
+    As a full-width button on top, "load sample data" kept catching clicks
+    from people who meant to load their own file.
+    """
+    at = AppTest.from_file(APP_PATH, default_timeout=30).run()
+    assert not at.exception
+    labels = [b.label for b in at.sidebar.button]
+    assert "Try sample data" in labels
+    # the uploader has no button of its own in AppTest, so assert the
+    # ordering that is observable: the sample button is not the first thing
+    # in the Data section by prominence -- it is a plain, non-full-width
+    # secondary control, and the uploader widget exists above it
+    assert len(at.sidebar.get("file_uploader")) == 1
+
+
+def test_sample_button_is_not_overridden_by_an_attached_upload(app):
+    """Clicking "try sample data" while a file is attached must switch to
+    the sample, and a later rerun must not flip it back.
+
+    The uploader used to re-fire on any rerun where the loaded source
+    wasn't the uploaded file, silently reloading the attachment over the
+    sample -- so once you'd uploaded anything, the button looked dead.
+
+    Tested through resolve_data_action rather than AppTest: Streamlit's
+    AppTest has no file_uploader element and cannot simulate an upload, so
+    an integration test here would pass whatever the branch did.
+    """
+    mine = ("mine.csv", 123)
+
+    # a brand-new attachment loads
+    assert app.resolve_data_action(False, mine, None) == "upload"
+    # ...but only once; after the caller claims it, reruns are no-ops
+    assert app.resolve_data_action(False, mine, mine) is None
+    # the bug: clicking sample with an unclaimed attachment present
+    assert app.resolve_data_action(True, mine, None) == "sample", \
+        "an explicit sample click must win over an attached upload"
+    # and having claimed the token, the following rerun must stay put
+    assert app.resolve_data_action(False, mine, mine) is None, \
+        "an attached upload must not reload over an explicitly chosen sample"
+    # swapping in a different file is a new token, so it does load
+    assert app.resolve_data_action(False, ("other.csv", 9), mine) == "upload"
+    # nothing attached, nothing clicked
+    assert app.resolve_data_action(False, None, None) is None
 
 
 def test_build_network_succeeds_with_defaults():
