@@ -9,12 +9,12 @@ without writing anything.
 Everything on the [Concepts](concepts.md) page about what the parameters
 *mean* applies unchanged; this page only covers driving the app.
 
-![The app after building a network from the bundled sample data.](assets/app-screenshot.png)
+![The app after building a network from the bundled sample data.](assets/app-screenshot.png){ width="760" }
 /// caption
 After a build: the missing-data notice and the result summary, above the plots.
 ///
 
-![The interactive network, coloured by daily maximum temperature.](assets/app-network.png)
+![The interactive network, coloured by daily maximum temperature.](assets/app-network.png){ width="760" }
 /// caption
 The interactive network, built from the bundled weather data and coloured by
 `tmax`. The seasonal cycle shows up directly as a loop running cold (blue)
@@ -22,7 +22,7 @@ through warm (red) and back. Nodes are draggable, the view zooms and pans, and
 hovering a node reports its member count and colour value.
 ///
 
-![The geodesic recurrence plot below the network.](assets/app-recurrence.png)
+![The geodesic recurrence plot below the network.](assets/app-recurrence.png){ width="760" }
 /// caption
 Below it, the geodesic recurrence plot, with the **Export / share** and **Show
 equivalent code** panels beneath. The repeating block structure is the same

@@ -14,6 +14,7 @@ with unchanged parameters is instant. Changing a Plot Options widget
 the *cached* network on every Streamlit rerun -- cheap, no rebuild.
 """
 
+import inspect
 import json
 import zipfile
 from datetime import datetime
@@ -31,6 +32,11 @@ from scipy.stats import zscore as scipy_zscore
 from tmapper import tknndigraph, filtergraph, plot_tmgraph_interactive, tcm_distance
 
 SAMPLE_DATA_PATH = Path(__file__).resolve().parent.parent / "sampledata" / "EL_temp.csv"
+
+# cap on the main content column (see the CSS in main()) -- wide enough for
+# the network to breathe, narrow enough that plots stay readable rather than
+# spanning a whole large monitor
+MAX_CONTENT_WIDTH_PX = 1100
 
 DEFAULTS = {
     "zscore": True,
@@ -104,6 +110,34 @@ def set_data(df, source_label, source_code):
     st.session_state["data_source_code"] = source_code
     st.session_state["numeric_vars"] = numvars
     st.session_state["selected_vars"] = numvars
+
+
+FIGURE_WIDTH_PX = 560
+
+# Streamlit >=1.59 sizes st.pyplot via `width`; older releases only have
+# `use_container_width`. Detect rather than try/except: older versions pass
+# unknown kwargs straight through to fig.savefig(), so a wrong guess fails
+# somewhere confusing instead of raising a clean TypeError here.
+_PYPLOT_HAS_WIDTH = "width" in inspect.signature(st.pyplot).parameters
+
+
+def show_figure(fig, width_px=FIGURE_WIDTH_PX):
+    """Render a matplotlib figure at a fixed, readable width instead of
+    letting it stretch to fill the column -- a 6x5.5in figure blown up to a
+    wide monitor's width is unreadable.
+
+    Uses an explicit pixel width rather than 'content'/native size, since
+    the native size still rendered near 1000px. Streamlit clamps this to the
+    container on narrow screens, so it stays responsive on a phone.
+
+    Note on newer Streamlit: `width` defaults to 'stretch' and *overrides*
+    the deprecated `use_container_width`, so passing only the old flag there
+    silently does nothing.
+    """
+    if _PYPLOT_HAS_WIDTH:
+        st.pyplot(fig, width=width_px)
+    else:
+        st.pyplot(fig, use_container_width=False)
 
 
 # ==================================================== pre-flight size guard
@@ -433,7 +467,7 @@ def render_network(built, df, color_var, time_var, nodesizemode, labelmethod, sh
         ax.set_ylabel("time")
         ax.set_title("geodesic recurrence plot")
         fig.colorbar(im, ax=ax, label="path length")
-        st.pyplot(fig)
+        show_figure(fig)
 
     return html, fig, colorvar, colorlabel, title
 
@@ -529,6 +563,14 @@ def generate_code(source_code, selected_vars, zscore_on, start_row, end_row, dow
 
 def main():
     st.set_page_config(page_title="Temporal Mapper", layout="wide")
+    # layout="wide" is right for the sidebar, but lets the main column grow
+    # to the full width of a large monitor, which stretches the plots to an
+    # unreadable size. Cap the content column instead -- it still shrinks
+    # normally on narrow screens/phones, it just stops growing past this.
+    st.markdown(
+        f"<style>.block-container {{ max-width: {MAX_CONTENT_WIDTH_PX}px; }}</style>",
+        unsafe_allow_html=True,
+    )
     st.title("Temporal Mapper")
 
     # Reset must apply BEFORE any widget below is instantiated this run --
@@ -710,7 +752,7 @@ def main():
                     ax_static.set_title(title, fontsize=9)
                     sbuf = BytesIO()
                     fig_static.savefig(sbuf, format="png", dpi=200, bbox_inches="tight")
-                st.pyplot(fig_static)
+                show_figure(fig_static)
                 plt.close(fig_static)
                 st.download_button(
                     "Network figure (.png)", data=sbuf.getvalue(),
