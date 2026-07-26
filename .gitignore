@@ -10,3 +10,6 @@ venv/
 .idea/
 .DS_Store
 site/
+
+# default output path of plot_tmgraph_interactive / the app's generated code
+tmgraph.html
