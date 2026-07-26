@@ -6,6 +6,8 @@ pipeline logic in isolation."""
 import re
 from pathlib import Path
 
+import networkx as nx
+import pandas as pd
 import pytest
 
 pytest.importorskip("streamlit")
@@ -87,26 +89,82 @@ def test_missing_data_is_dropped_with_a_warning():
 
 
 def test_export_panel_offers_downloadable_artifacts():
-    """Export buttons should exist after a build, and the interactive-HTML
-    payload should be the real self-contained page (not a placeholder)."""
+    """All export buttons should be wired up after a build."""
     at = AppTest.from_file(APP_PATH, default_timeout=90).run()
     _load_sample(at)
     build_button = [b for b in at.sidebar.button if b.label == "Build Network"][0]
     build_button.click().run()
     assert not at.exception
 
-    labels = [b.label for b in at.main.button] + [
-        getattr(b, "label", "") for b in at.get("download_button")
-    ]
-    for expected in ["Interactive network (.html)", "Recurrence plot (.png)", "Node table (.csv)"]:
-        assert any(expected in lbl for lbl in labels), f"missing export button: {expected}"
+    labels = [b.label for b in at.get("download_button")]
+    for expected in [
+        "Interactive network (.html)", "Recurrence plot (.png)",
+        "Timeline (.csv)", "Network (.graphml)", "Parameters (.json)", "Everything (.zip)",
+    ]:
+        assert any(expected in lbl for lbl in labels), \
+            f"missing export button: {expected} (got {labels})"
 
-    # AppTest doesn't expose a download button's payload, so the HTML
-    # content itself is covered by test_plot_tmgraph_interactive_* in
-    # tests/test_visualization.py; here we only assert the app wires the
-    # buttons up and renders them without error.
-    html_btn = [b for b in at.get("download_button") if "Interactive network" in b.label][0]
-    assert html_btn.label == "Interactive network (.html)"
+
+def test_export_artifacts_are_valid_and_consistent(monkeypatch):
+    """Build the export payloads directly and check they're actually
+    usable: parseable, mutually consistent, and covering every time point."""
+    import importlib.util
+    import io
+    import json as _json
+    import zipfile
+
+    spec = importlib.util.spec_from_file_location("tm_app", APP_PATH)
+    app = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(app)
+
+    repo_root = Path(APP_PATH).resolve().parent.parent
+    monkeypatch.chdir(repo_root)
+
+    df, _dropped = app.read_csv_smart(repo_root / "sampledata" / "EL_temp.csv")
+    df = df.iloc[53883:].reset_index(drop=True)
+    selected = tuple(app.numeric_columns(df))
+
+    built = app.build_network(
+        df, selected, True, 0, None, 4, 0, 1, 3, 3.0, 1, 100.0, float("inf"), True
+    )
+    n_nodes = built["g_simp"].number_of_nodes()
+
+    # -- timeline: one row per retained time point, every node covered,
+    # and source_row values must be real indices into the source frame
+    timeline = pd.read_csv(io.StringIO(app.build_timeline_csv(built, df, "tmax", "(row index)")))
+    assert len(timeline) == len(built["tidx"]), "timeline must cover every retained time point."
+    assert set(timeline["node"]) == set(range(n_nodes)), "every node must appear in the timeline."
+    assert timeline["source_row"].max() < len(df), "source_row must index into the source frame."
+    assert "tmax" in timeline.columns, "timeline should carry the selected color variable."
+
+    # -- graphml: parses back with matching topology and node attributes
+    graphml = app.build_graphml(built, df["tmax"].to_numpy()[built["rows"]], "mode")
+    g_back = nx.read_graphml(io.BytesIO(graphml))
+    assert g_back.number_of_nodes() == n_nodes
+    assert g_back.number_of_edges() == built["g_simp"].number_of_edges()
+    attrs = next(iter(g_back.nodes(data=True)))[1]
+    for key in ("n_members", "color_value", "first_source_row", "last_source_row"):
+        assert key in attrs, f"graphml nodes missing attribute {key}"
+    total_members = sum(int(d["n_members"]) for _, d in g_back.nodes(data=True))
+    assert total_members == len(built["tidx"]), "node member counts must sum to the time points."
+
+    # -- params json: strict-parseable (no bare Infinity) and complete
+    params = _json.loads(app.build_params_json(
+        built, "sample", "dat = ...", selected, True, 0, None, 4, 0, 1,
+        3, 3.0, 1, 100.0, float("inf"), True, "tmax", "(row index)", "log", "mode", True,
+    ))
+    assert params["network_parameters"]["max_neighbor_dist"] == "inf", \
+        "non-finite values must be serialized as strings, not bare Infinity."
+    assert params["data_source"]["label"] == "sample"
+    assert params["preprocessing"]["downsample"] == 4
+    assert params["result"]["n_nodes"] == n_nodes
+
+    # -- zip bundles all five entries
+    zbytes = app.build_export_zip("<html></html>", "a,b\n1,2\n", graphml, "{}", "print(1)")
+    with zipfile.ZipFile(io.BytesIO(zbytes)) as z:
+        assert set(z.namelist()) == {
+            "network.graphml", "timeline.csv", "params.json", "tmgraph.html", "reproduce.py"
+        }
 
 
 def test_generated_code_is_self_contained_and_reproduces_the_build(tmp_path, monkeypatch):

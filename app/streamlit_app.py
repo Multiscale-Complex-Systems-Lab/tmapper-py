@@ -14,9 +14,13 @@ with unchanged parameters is instant. Changing a Plot Options widget
 the *cached* network on every Streamlit rerun -- cheap, no rebuild.
 """
 
+import json
+import zipfile
+from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 
+import networkx as nx
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -203,6 +207,155 @@ def build_network(
         "k": k, "d": d, "texclude": texclude, "lag": lag, "order": order,
         "downsample": downsample,
     }
+
+
+# ================================================================= exports
+#
+# Design principle: export only the *irreducible* state. Anything a user
+# can regenerate in one line is deliberately left out, because those are
+# the big files -- the geodesic recurrence matrix is O(n_timepoints^2)
+# (~120 MB on the bundled sample) yet is just tcm_distance(g_simp,
+# members), and D_simp is filtergraph's 4th return value. Likewise an
+# edge-list CSV is fully contained in the GraphML. So the three files
+# below are small, non-overlapping, and each has exactly one job.
+
+def _jsonsafe(x):
+    """Convert numpy scalars to plain Python, and non-finite floats to
+    the same 'inf'/'nan' spellings the app's own text fields use --
+    json.dumps would otherwise emit bare `Infinity`, which is invalid
+    JSON to strict parsers (notably JavaScript's JSON.parse)."""
+    if isinstance(x, (np.integer,)):
+        return int(x)
+    if isinstance(x, (np.floating, float)):
+        x = float(x)
+        if np.isinf(x):
+            return "inf" if x > 0 else "-inf"
+        if np.isnan(x):
+            return "nan"
+        return x
+    if isinstance(x, (np.bool_, bool)):
+        return bool(x)
+    return x
+
+
+def build_timeline_csv(built, df, color_var, time_var):
+    """Long-format node<->row mapping: one row per retained time point.
+
+    This is the join-back table -- 'which attractor was the system in at
+    time t' -- and is what downstream dwell-time/transition/occupancy
+    analysis actually needs. Carries the chosen color/time columns so it
+    can be used directly without re-reading the source file.
+    """
+    members, rows, tidx = built["members"], built["rows"], built["tidx"]
+    node_of_tidx = np.empty(len(tidx), dtype=int)
+    for n, m in enumerate(members):
+        node_of_tidx[np.asarray(m, dtype=int)] = n
+
+    out = pd.DataFrame({"tidx": tidx, "source_row": rows, "node": node_of_tidx})
+    if color_var != "(row index)":
+        out[color_var] = df[color_var].to_numpy()[rows]
+    if time_var != "(row index)" and time_var != color_var:
+        out[time_var] = df[time_var].to_numpy()[rows]
+    return out.to_csv(index=False)
+
+
+def build_graphml(built, colorvar, labelmethod):
+    """The network itself: topology + edge weights + per-node attributes.
+
+    Members are deliberately NOT embedded here (they'd have to be
+    delimited strings, which reads badly in Gephi/Cytoscape) -- that
+    mapping lives in timeline.csv instead, so the two files don't overlap.
+    """
+    from tmapper import find_node_label
+
+    g = built["g_simp"].copy()
+    members, rows = built["members"], built["rows"]
+    node_values = find_node_label(members, colorvar, labelmethod=labelmethod)
+    for n, node in enumerate(g.nodes()):
+        m = np.asarray(members[n], dtype=int)
+        g.nodes[node]["n_members"] = int(len(m))
+        g.nodes[node]["color_value"] = float(node_values[n])
+        g.nodes[node]["first_source_row"] = int(rows[m.min()])
+        g.nodes[node]["last_source_row"] = int(rows[m.max()])
+    buf = BytesIO()
+    nx.write_graphml(g, buf)
+    return buf.getvalue()
+
+
+def build_params_json(built, source_label, source_code, selected_vars, zscore_on,
+                      start_row, end_row, downsample, lag, order, k, d, texclude,
+                      maxdistprct, maxdist, reciprocal, color_var, time_var,
+                      nodesizemode, labelmethod, show_recurrence):
+    """Full provenance: data source, every preprocessing/build/plot
+    setting, and the resulting network's shape -- enough to reproduce or
+    audit the build without the app."""
+    g_simp = built["g_simp"]
+    payload = {
+        "generated_by": "tmapper Streamlit app",
+        "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "tmapper_version": _tmapper_version(),
+        "data_source": {
+            "label": source_label,
+            "loading_code": source_code,
+        },
+        "preprocessing": {
+            "selected_variables": list(selected_vars),
+            "zscore": bool(zscore_on),
+            "zscore_ddof": 1 if zscore_on else None,
+            "start_row": _jsonsafe(start_row),
+            "end_row": "last" if end_row is None else _jsonsafe(end_row),
+            "downsample": _jsonsafe(downsample),
+            "downsample_lowpass": "centered rolling mean, window = downsample" if downsample > 1 else None,
+            "embed_lag": _jsonsafe(lag),
+            "embed_order": _jsonsafe(order),
+            "rows_in_window": _jsonsafe(built["n_window"]),
+            "rows_dropped_missing": _jsonsafe(built["n_dropped"]),
+        },
+        "network_parameters": {
+            "k": _jsonsafe(k),
+            "d": _jsonsafe(d),
+            "texclude": _jsonsafe(texclude),
+            "max_neighbor_dist_prct": _jsonsafe(maxdistprct),
+            "max_neighbor_dist": _jsonsafe(maxdist),
+            "max_neighbor_dist_resolved": _jsonsafe(built["par"]["max_neighbor_dist"]),
+            "reciprocal": bool(reciprocal),
+            "distance_metric": "euclidean",
+        },
+        "plot_options": {
+            "color_by": color_var,
+            "time_axis": time_var,
+            "nodesizemode": nodesizemode,
+            "labelmethod": labelmethod,
+            "show_recurrence": bool(show_recurrence),
+        },
+        "result": {
+            "n_nodes": int(g_simp.number_of_nodes()),
+            "n_edges": int(g_simp.number_of_edges()),
+            "n_timepoints": int(len(built["tidx"])),
+        },
+    }
+    return json.dumps(payload, indent=2)
+
+
+def _tmapper_version():
+    try:
+        from importlib.metadata import version
+        return version("tmapper")
+    except Exception:
+        return "unknown"
+
+
+def build_export_zip(html, timeline_csv, graphml_bytes, params_json, code):
+    """Everything in one archive: the three data files plus the
+    self-contained interactive page and the script that reproduces it."""
+    buf = BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("network.graphml", graphml_bytes)
+        z.writestr("timeline.csv", timeline_csv)
+        z.writestr("params.json", params_json)
+        z.writestr("tmgraph.html", html)
+        z.writestr("reproduce.py", code)
+    return buf.getvalue()
 
 
 # ============================================================ cheap: render
@@ -494,6 +647,14 @@ def main():
             built, df, color_var, time_var, nodesizemode, labelmethod, show_recurrence
         )
 
+        # generated once: shown in the code panel below AND bundled into
+        # the export zip as reproduce.py
+        code = generate_code(
+            st.session_state["data_source_code"], selected_vars, zscore_on, start_row, end_row,
+            downsample, lag, order, k, d, texclude, maxdistprct, maxdist, reciprocal,
+            color_var, time_var, nodesizemode, labelmethod, show_recurrence,
+        )
+
         with st.expander("Export / share"):
             # the pyvis page is built with cdn_resources="in_line", so this
             # file is fully self-contained -- it stays interactive offline
@@ -537,27 +698,54 @@ def main():
                     file_name="tmgraph.png", mime="image/png", use_container_width=True,
                 )
 
-            # node-level table, for downstream analysis outside the app
-            node_csv = pd.DataFrame({
-                "node": list(built["g_simp"].nodes()),
-                "n_members": [len(m) for m in built["members"]],
-                "first_row": [int(built["rows"][m[0]]) for m in built["members"]],
-            }).to_csv(index=False)
+            st.markdown("**Data for downstream analysis**")
+            st.caption(
+                "Deliberately excludes the geodesic/simplified distance matrices: both are "
+                "O(n²) (the recurrence matrix alone is ~120 MB on the sample data) and both "
+                "are one line to regenerate from the files below."
+            )
+
+            timeline_csv = build_timeline_csv(built, df, color_var, time_var)
             st.download_button(
-                "Node table (.csv)", data=node_csv, file_name="tmgraph_nodes.csv",
+                "Timeline (.csv)", data=timeline_csv, file_name="timeline.csv",
                 mime="text/csv", use_container_width=True,
-                help="One row per network node: member count and the first original data row it covers.",
+                help="One row per retained time point: source row, tidx, and which node it belongs to. "
+                     "Join this back to your data for dwell times, transition rates, occupancy stats.",
+            )
+
+            graphml_bytes = build_graphml(built, colorvar, labelmethod)
+            st.download_button(
+                "Network (.graphml)", data=graphml_bytes, file_name="network.graphml",
+                mime="application/xml", use_container_width=True,
+                help="Topology + edge weights + per-node attributes. Opens in Gephi/Cytoscape, "
+                     "round-trips through networkx.read_graphml.",
+            )
+
+            params_json = build_params_json(
+                built, st.session_state["data_source"], st.session_state["data_source_code"],
+                selected_vars, zscore_on, start_row, end_row, downsample, lag, order,
+                k, d, texclude, maxdistprct, maxdist, reciprocal,
+                color_var, time_var, nodesizemode, labelmethod, show_recurrence,
+            )
+            st.download_button(
+                "Parameters (.json)", data=params_json, file_name="params.json",
+                mime="application/json", use_container_width=True,
+                help="Full provenance: data source, every preprocessing/build/plot setting, "
+                     "and the resulting network's shape.",
+            )
+
+            st.markdown("---")
+            st.download_button(
+                "⬇ Everything (.zip)", data=build_export_zip(
+                    html, timeline_csv, graphml_bytes, params_json, code
+                ),
+                file_name="tmapper_export.zip", mime="application/zip",
+                type="primary", use_container_width=True,
+                help="All three files above, plus the interactive page and a reproduce.py script.",
             )
 
         with st.expander("Show equivalent code"):
-            st.code(
-                generate_code(
-                    st.session_state["data_source_code"], selected_vars, zscore_on, start_row, end_row,
-                    downsample, lag, order, k, d, texclude, maxdistprct, maxdist, reciprocal,
-                    color_var, time_var, nodesizemode, labelmethod, show_recurrence,
-                ),
-                language="python",
-            )
+            st.code(code, language="python")
     else:
         st.info("Set parameters in the sidebar and click **Build Network** to get started.")
 
