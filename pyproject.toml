@@ -4,12 +4,30 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tmapper"
-version = "0.1.0.dev0"
+version = "0.1.0"
 description = "Python port of Temporal Mapper 2 -- build attractor transition networks from time-series data"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { file = "LICENSE" }
+# SPDX string + license-files: the `{ file = ... }` table form is
+# deprecated and stops working on setuptools >= 77.
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
 authors = [{ name = "Mengsen Zhang" }]
+keywords = [
+    "temporal mapper", "topological data analysis", "mapper",
+    "dynamical systems", "time series", "attractor", "recurrence",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Topic :: Scientific/Engineering :: Visualization",
+]
 dependencies = [
     "numpy>=1.24",
     "scipy>=1.10",
@@ -18,8 +36,23 @@ dependencies = [
 
 [project.optional-dependencies]
 plot = ["matplotlib>=3.7", "python-igraph>=1.0", "pyvis>=0.3"]
-test = ["pytest>=7.0"]
+# pandas is declared explicitly rather than leaned on as a streamlit
+# transitive dependency: the app imports it directly, so it is a real
+# requirement of ours. The core library stays pandas-free.
+app = [
+    "streamlit>=1.30",
+    "pandas>=1.5",
+    "matplotlib>=3.7",
+    "python-igraph>=1.0",
+    "pyvis>=0.3",
+]
+# the app tests drive the app, so they need its dependencies too
+test = ["pytest>=7.0", "pandas>=1.5"]
 docs = ["mkdocs-material>=9.5", "mkdocstrings[python]>=0.25"]
+
+[project.scripts]
+# `pip install "tmapper[app]"` then just `tmapper-app`
+tmapper-app = "tmapper.app.launcher:main"
 
 [project.urls]
 Homepage = "https://github.com/Multiscale-Complex-Systems-Lab/tmapper-py"
@@ -27,3 +60,8 @@ Homepage = "https://github.com/Multiscale-Complex-Systems-Lab/tmapper-py"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+# the bundled sample dataset, so the app's "Try sample data" button and the
+# Quickstart work from a pip install and not only from a clone
+tmapper = ["sampledata/*.csv"]

@@ -5,8 +5,8 @@ reproduces the figure on the [home page](index.md). It mirrors the MATLAB
 toolbox's own `tmapper_demo.m`, translated step by step into Python.
 
 The sample data is a slice of historical **East Lansing daily weather**
-(temperature and precipitation), included in the repo at
-`sampledata/EL_temp.csv`.
+(temperature and precipitation). It ships inside the package, so
+`sample_data_path()` finds it however you installed tmapper.
 
 ## Step 0 — Imports
 
@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 from scipy.stats import zscore
 from scipy.spatial.distance import cdist
 
-from tmapper import tknndigraph, filtergraph, plot_tmgraph_tcm
+from tmapper import tknndigraph, filtergraph, plot_tmgraph_tcm, sample_data_path
 ```
 
 ## Step 1 — Load and select the data
@@ -26,7 +26,7 @@ Read the sample CSV, drop rows with missing values, and keep a recent slice
 for a manageable demo:
 
 ```python
-dat = pd.read_csv("sampledata/EL_temp.csv")
+dat = pd.read_csv(sample_data_path())   # ships with the package
 dat = dat.dropna()
 dat = dat.iloc[53883:].reset_index(drop=True)   # keep a recent slice for the demo
 ```

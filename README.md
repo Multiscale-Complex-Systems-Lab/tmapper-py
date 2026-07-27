@@ -14,16 +14,37 @@ For the full background, citation, and the original MATLAB implementation, see [
 - **Standalone graph builders**: `knngraph`, `cknngraph`
 - **Graph/data utilities**: `node_size`, `node_measure`, `normalize_geodesic`, `normalize_tcm`, `members_to_tidx`, `subgraph_from_members`, `sym_dyn_to_digraph`, `digraph_to_graph`, `find_blocks`
 - **Cycle/path analysis toolkit**: `cycle_count` (Giscard/Kriege/Wilson combinatorial-sieve counter, third-party algorithm carrying its own BSD license -- see `cycle_count.py`), `cycle_count2p`, `reorg_cycles`, `cycle_path_overlap`, `cycle_cluster`, `cycle_cluster_conn`, `cycle_cutter`, `cycles_to_paths`, `cycle_path_decomp`, `path_traffic`, `qasym`, `cal_mod`
+- **Interactive app**: `tmapper-app`, a browser front end for the whole pipeline -- see below
 
 All ported functions were cross-checked node-for-node and edge-for-edge against real MATLAB output on deterministic test graphs (see the test suite for the same hand-derived oracle values used in the MATLAB toolbox's own `tests/`).
 
-## Installation (development)
+## Installation
+
+```bash
+pip install tmapper                 # library
+pip install "tmapper[app]"          # library + the interactive app
+```
+
+For development, from a clone:
 
 ```bash
 git clone https://github.com/Multiscale-Complex-Systems-Lab/tmapper-py.git
 cd tmapper-py
-pip install -e ".[plot,test]"
+pip install -e ".[app,test]"
 ```
+
+## Interactive app
+
+Prefer point-and-click? `tmapper-app` runs the same pipeline in your browser -- load data, pick variables, turn the parameters, and explore the network without writing any code:
+
+```bash
+pip install "tmapper[app]"
+tmapper-app
+```
+
+It handles missing data and downsampling for you (dropping incomplete rows before an anti-aliasing lowpass), exports both figures and analysis-ready data (interactive HTML, PNGs, a per-timepoint `timeline.csv`, GraphML, and a provenance JSON), and shows a runnable script reproducing the current build.
+
+See the [Interactive App guide](https://multiscale-complex-systems-lab.github.io/tmapper-py/app/) for a full walkthrough.
 
 ## Running tests
 

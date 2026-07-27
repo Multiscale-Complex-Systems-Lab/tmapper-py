@@ -1,0 +1,202 @@
+# =============================================================================
+# .github/workflows/publish-test.yml
+#
+# Rehearsal for publish.yml, against TestPyPI instead of the real index.
+# Run it by hand (Actions -> "Publish to TestPyPI" -> Run workflow) to prove
+# the build, the metadata and the trusted-publishing handshake all work
+# before a real release, where mistakes are permanent.
+#
+# ---------------------------------------------------------------------------
+# ONE-TIME SETUP (already done)
+#
+# 1. Trusted publisher registered at
+#      https://test.pypi.org/manage/account/publishing/
+#    as a *pending* publisher (the project doesn't exist on TestPyPI yet --
+#    it's created automatically on the first successful publish through it):
+#      PyPI project name: tmapper-py
+#      Owner: Multiscale-Complex-Systems-Lab   Repository: tmapper-py
+#      Workflow: publish-test.yml              Environment: (Any)
+#
+# 2. GitHub environment named `testpypi` created
+#    (Settings -> Environments -> New environment). A publisher scoped to
+#    "Any" environment accepts a claim naming a specific one, so this job's
+#    `environment: testpypi` below is compatible with the "(Any)" registered
+#    above.
+#
+# ---------------------------------------------------------------------------
+# WHY THE PROJECT IS PUBLISHED AS "tmapper-py", NOT "tmapper"
+#
+# The real package is named `tmapper` (see pyproject.toml), but that name is
+# squatted on TestPyPI by an unrelated project (a "Placeholder for internal
+# package" uploaded by a different account in 2024) -- ordinary TestPyPI
+# squatting, since it's a free-for-all sandbox with no cleanup. Real PyPI
+# still has `tmapper` free; this only affects the rehearsal index.
+#
+# So the build step below renames the project to `tmapper-py` (this repo's
+# name) purely for the TestPyPI upload, in a scratch copy of pyproject.toml
+# that is never committed. This changes only the *distribution* name (what
+# `pip install` and extras like `tmapper-py[app]` refer to) -- the wheel's
+# importable module is still named `tmapper` regardless, so `import tmapper`
+# and `sample_data_path()` etc. work unchanged once installed.
+#
+# ---------------------------------------------------------------------------
+# WHY THE VERSION GETS A SUFFIX
+#
+# TestPyPI enforces the same rule as PyPI: a version can never be uploaded
+# twice, even after deleting it. A plain rehearsal of 0.1.0 would therefore
+# work exactly once and fail on every later attempt. So by default this
+# appends `.devN` (N = the run number) purely for the upload, leaving
+# pyproject.toml untouched in git.
+# =============================================================================
+name: Publish to TestPyPI
+
+on:
+  workflow_dispatch:
+    inputs:
+      unique_version:
+        description: "Append .dev<run number> so the upload doesn't collide with an earlier rehearsal"
+        type: boolean
+        default: true
+
+jobs:
+  build:
+    name: Build distributions
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Edits the working copy only -- nothing is committed. Unconditional
+      # (unlike the version bump below): the name collision is permanent,
+      # not something that only bites on a rerun.
+      - name: Rename the project for the TestPyPI rehearsal
+        run: |
+          python - <<'PY'
+          import pathlib, re
+          p = pathlib.Path("pyproject.toml")
+          s = p.read_text(encoding="utf-8")
+          s, n = re.subn(
+              r'^name = "tmapper"$', 'name = "tmapper-py"', s, count=1, flags=re.M,
+          )
+          assert n == 1, "could not find the project name line in pyproject.toml"
+          p.write_text(s, encoding="utf-8")
+          print(re.search(r'^name = .*', s, re.M).group(0))
+          PY
+
+      # Edits the working copy only -- nothing is committed.
+      - name: Make the rehearsal version unique
+        if: ${{ inputs.unique_version }}
+        run: |
+          python - <<'PY'
+          import os, pathlib, re
+          p = pathlib.Path("pyproject.toml")
+          s = p.read_text(encoding="utf-8")
+          s, n = re.subn(
+              r'^version = "([^"]+)"',
+              lambda m: f'version = "{m.group(1)}.dev{os.environ["GITHUB_RUN_NUMBER"]}"',
+              s, count=1, flags=re.M,
+          )
+          assert n == 1, "could not find the version line in pyproject.toml"
+          p.write_text(s, encoding="utf-8")
+          print(re.search(r'^version = .*', s, re.M).group(0))
+          PY
+
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+
+      - name: Check the built metadata
+        run: |
+          python -m pip install --upgrade twine
+          python -m twine check dist/*
+
+      - name: Upload the distributions as build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-testpypi
+          path: dist/
+
+  publish:
+    name: Upload to TestPyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write
+    steps:
+      - name: Download the built distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-testpypi
+          path: dist/
+
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  smoke-test:
+    # The point of rehearsing is to find out whether the *published artifact*
+    # installs and runs, not merely whether the upload returned 200.
+    name: Install from TestPyPI and run it
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # --extra-index-url is required: numpy/scipy/streamlit and friends are
+      # not on TestPyPI, so their real releases have to come from PyPI.
+      # Retried because a fresh upload takes a little while to become
+      # installable.
+      #
+      # The distribution name here is "tmapper-py" -- what this rehearsal
+      # publishes under -- not "tmapper" (see the header note on the name
+      # collision). The installed *module* is still `tmapper`, unaffected.
+      - name: Install the freshly published package
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if pip install \
+                 --index-url https://test.pypi.org/simple/ \
+                 --extra-index-url https://pypi.org/simple/ \
+                 --pre "tmapper-py[app]"; then
+              exit 0
+            fi
+            echo "not available yet, retrying in 30s (attempt $attempt)"
+            sleep 30
+          done
+          echo "::error::package never became installable from TestPyPI"
+          exit 1
+
+      - name: Check the package actually works
+        env:
+          MPLBACKEND: Agg
+        run: |
+          python - <<'PY'
+          import pandas as pd
+          from tmapper import sample_data_path, tknndigraph, filtergraph
+
+          # the bundled sample data must have survived packaging
+          path = sample_data_path()
+          assert path.exists(), f"sample data missing from the installed package: {path}"
+          rows = len(pd.read_csv(path))
+          print(f"sample data OK: {path} ({rows} rows)")
+
+          # and the app must be importable from the installed package
+          from tmapper.app import launcher
+          assert launcher.APP_FILE.exists(), "app file missing from the installed package"
+          print(f"app OK: {launcher.APP_FILE}")
+          PY
+
+      - name: Check the console script is installed
+        run: |
+          which tmapper-app
+          echo "tmapper-app is on PATH"
