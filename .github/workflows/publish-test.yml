@@ -7,15 +7,37 @@
 # before a real release, where mistakes are permanent.
 #
 # ---------------------------------------------------------------------------
-# ONE-TIME SETUP
+# ONE-TIME SETUP (already done)
 #
-# 1. Register a trusted publisher at
+# 1. Trusted publisher registered at
 #      https://test.pypi.org/manage/account/publishing/
-#    Owner: Multiscale-Complex-Systems-Lab   Repository: tmapper-py
-#    Workflow: publish-test.yml              Environment: testpypi
+#    as a *pending* publisher (the project doesn't exist on TestPyPI yet --
+#    it's created automatically on the first successful publish through it):
+#      PyPI project name: tmapper-py
+#      Owner: Multiscale-Complex-Systems-Lab   Repository: tmapper-py
+#      Workflow: publish-test.yml              Environment: (Any)
 #
-# 2. Create a GitHub environment named `testpypi`
-#    (Settings -> Environments -> New environment).
+# 2. GitHub environment named `testpypi` created
+#    (Settings -> Environments -> New environment). A publisher scoped to
+#    "Any" environment accepts a claim naming a specific one, so this job's
+#    `environment: testpypi` below is compatible with the "(Any)" registered
+#    above.
+#
+# ---------------------------------------------------------------------------
+# WHY THE PROJECT IS PUBLISHED AS "tmapper-py", NOT "tmapper"
+#
+# The real package is named `tmapper` (see pyproject.toml), but that name is
+# squatted on TestPyPI by an unrelated project (a "Placeholder for internal
+# package" uploaded by a different account in 2024) -- ordinary TestPyPI
+# squatting, since it's a free-for-all sandbox with no cleanup. Real PyPI
+# still has `tmapper` free; this only affects the rehearsal index.
+#
+# So the build step below renames the project to `tmapper-py` (this repo's
+# name) purely for the TestPyPI upload, in a scratch copy of pyproject.toml
+# that is never committed. This changes only the *distribution* name (what
+# `pip install` and extras like `tmapper-py[app]` refer to) -- the wheel's
+# importable module is still named `tmapper` regardless, so `import tmapper`
+# and `sample_data_path()` etc. work unchanged once installed.
 #
 # ---------------------------------------------------------------------------
 # WHY THE VERSION GETS A SUFFIX
@@ -48,6 +70,23 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      # Edits the working copy only -- nothing is committed. Unconditional
+      # (unlike the version bump below): the name collision is permanent,
+      # not something that only bites on a rerun.
+      - name: Rename the project for the TestPyPI rehearsal
+        run: |
+          python - <<'PY'
+          import pathlib, re
+          p = pathlib.Path("pyproject.toml")
+          s = p.read_text(encoding="utf-8")
+          s, n = re.subn(
+              r'^name = "tmapper"$', 'name = "tmapper-py"', s, count=1, flags=re.M,
+          )
+          assert n == 1, "could not find the project name line in pyproject.toml"
+          p.write_text(s, encoding="utf-8")
+          print(re.search(r'^name = .*', s, re.M).group(0))
+          PY
 
       # Edits the working copy only -- nothing is committed.
       - name: Make the rehearsal version unique
@@ -118,13 +157,17 @@ jobs:
       # not on TestPyPI, so their real releases have to come from PyPI.
       # Retried because a fresh upload takes a little while to become
       # installable.
+      #
+      # The distribution name here is "tmapper-py" -- what this rehearsal
+      # publishes under -- not "tmapper" (see the header note on the name
+      # collision). The installed *module* is still `tmapper`, unaffected.
       - name: Install the freshly published package
         run: |
           for attempt in 1 2 3 4 5; do
             if pip install \
                  --index-url https://test.pypi.org/simple/ \
                  --extra-index-url https://pypi.org/simple/ \
-                 --pre "tmapper[app]"; then
+                 --pre "tmapper-py[app]"; then
               exit 0
             fi
             echo "not available yet, retrying in 30s (attempt $attempt)"

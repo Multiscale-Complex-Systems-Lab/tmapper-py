@@ -21,10 +21,15 @@ clone instead, which you want if you intend to modify the code.
 !!! note "Trying a pre-release from TestPyPI"
     Release candidates are rehearsed on TestPyPI first. Those builds need
     PyPI as a fallback index, because tmapper's dependencies only live
-    there:
+    there. The project name there is **`tmapper-py`**, not `tmapper` — the
+    latter is squatted on TestPyPI by an unrelated placeholder package, so
+    rehearsals publish under this repo's name instead. This only affects
+    the rehearsal index; the installed module is still `tmapper`.
 
     ```bash
-    pip install --index-url https://test.pypi.org/simple/                 --extra-index-url https://pypi.org/simple/                 --pre "tmapper[app]"
+    pip install --index-url https://test.pypi.org/simple/ \
+                --extra-index-url https://pypi.org/simple/ \
+                --pre "tmapper-py[app]"
     ```
 
 ## Installing from a clone (for development)
