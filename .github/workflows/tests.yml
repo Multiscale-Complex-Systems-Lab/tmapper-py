@@ -13,6 +13,12 @@ on:
       - main
   pull_request:
 
+env:
+  # tests/test_visualization.py and the app's export paths render real
+  # figures, and the runner has no display -- pin the non-interactive
+  # backend rather than relying on matplotlib guessing right.
+  MPLBACKEND: Agg
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -29,8 +35,18 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      # The `app` extra is what pulls in streamlit, and it supersedes `plot`
+      # (same matplotlib/igraph/pyvis, plus streamlit). Without it,
+      # tests/test_app.py hits its `pytest.importorskip("streamlit")` and all
+      # 52 of its tests are skipped -- while the run still reports green, so
+      # the app would look covered when none of it had run.
       - name: Install tmapper
-        run: pip install -e ".[plot,test]"
+        run: pip install -e ".[app,test]"
+
+      # Fail loudly if the extras ever stop providing these, rather than
+      # letting importorskip quietly drop a large part of the suite again.
+      - name: Check optional test dependencies are present
+        run: python -c "import streamlit, matplotlib, igraph, pyvis"
 
       - name: Run test suite
         run: pytest -v
