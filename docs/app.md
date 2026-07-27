@@ -90,12 +90,12 @@ accepts `inf`.
 
 ### Plot Options
 
-Colour variable, colormap, time variable, node size mode, label method, and
+**Color by**, **Colormap**, **Time axis**, **Node size**, **Label method**, and
 whether to show the recurrence plot. **Changing any of these re-renders the
 existing network rather than rebuilding it**, so it is cheap to click through
 them freely once a build has finished.
 
-**Colour by** accepts anything — numbers, dates, or text categories such as
+**Color by** accepts anything — numbers, dates, or text categories such as
 condition, trial, or behavioural state. Categories are treated as purely
 nominal labels: they map to integer codes, aggregate per node by majority
 vote, and the colormap list switches to qualitative palettes, where adjacent

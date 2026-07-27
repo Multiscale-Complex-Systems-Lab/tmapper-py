@@ -484,6 +484,75 @@ def test_colormap_lists_are_type_appropriate(app):
         plt.get_cmap(name)  # must be a real matplotlib colormap
 
 
+@pytest.mark.parametrize(
+    "color_var, color_kind, cmap, must_contain",
+    [
+        ("tmax", "numeric", "viridis", "dat['tmax'].to_numpy()[rows]"),
+        ("Date", "datetime", "plasma", "mdates.date2num"),
+        ("season", "category", "tab10", "pd.factorize"),
+        ("(row index)", "index", "jet", "tidx.astype(float)"),
+    ],
+)
+def test_generated_code_runs_for_every_colour_type(
+    app, monkeypatch, color_var, color_kind, cmap, must_contain
+):
+    """The generated script must actually execute for each colour type.
+
+    Dates and categories emit different colour expressions (and dates need
+    an extra import), so covering only the default would miss a script that
+    reads fine but raises NameError when run -- which is exactly how the
+    earlier bare `inf` bug slipped through.
+    """
+    dat = _seasoned(app)
+    built = app.build_network(
+        dat, ("tmax", "tmin", "prcp"), True, 0, None, 1, 0, 1,
+        3, 3.0, 30, 100.0, 0.5, True,
+    )
+
+    code = app.generate_code(
+        "pass  # dat is supplied by the test", ("tmax", "tmin", "prcp"), True,
+        0, None, 1, 0, 1, 3, 3.0, 30, 100.0, 0.5, True,
+        color_var, "(row index)", "log", "mode", True,
+        None, cmap, color_kind,
+    )
+    assert must_contain in code, f"colour expression missing for {color_kind}"
+    assert f"cmap={cmap!r}" in code, "the chosen colormap must reach the generated code"
+    if color_kind == "datetime":
+        assert "import matplotlib.dates as mdates" in code, \
+            "date colouring needs its import emitted, or the script raises NameError"
+
+    monkeypatch.chdir(REPO_ROOT)
+    ns = {"dat": dat}
+    exec(compile(code, "<generated>", "exec"), ns)  # noqa: S102
+    assert ns["g_simp"].number_of_nodes() == built["g_simp"].number_of_nodes()
+    assert isinstance(ns["html"], str) and "<html" in ns["html"].lower()
+
+
+def test_params_json_records_colormap_and_time_index(app, sample_df):
+    """Provenance must capture the plot/preprocessing choices that change
+    the output, not just the network parameters."""
+    built = app.build_network(
+        sample_df, ("tmax", "tmin", "prcp"), True, 0, 500, 1, 0, 1,
+        3, 3.0, 1, 100.0, float("inf"), True,
+    )
+    params = _json.loads(app.build_params_json(
+        built, "sample", "dat = ...", ("tmax", "tmin", "prcp"), True, 0, 500, 1, 0, 1,
+        3, 3.0, 1, 100.0, float("inf"), True, "tmax", "Date", "log", "mode", True,
+        tidx_var="Date", cmap="cividis",
+    ))
+    assert params["plot_options"]["cmap"] == "cividis"
+    assert params["plot_options"]["color_by"] == "tmax"
+    assert params["preprocessing"]["time_index_source"] == "Date"
+
+    # and the default must record that it came from row order, not a column
+    params2 = _json.loads(app.build_params_json(
+        built, "sample", "dat = ...", ("tmax",), True, 0, 500, 1, 0, 1,
+        3, 3.0, 1, 100.0, float("inf"), True, "(row index)", "(row index)",
+        "log", "mode", True,
+    ))
+    assert params2["preprocessing"]["time_index_source"] == "row order"
+
+
 def test_user_supplied_tidx_column_is_used(app):
     """A chosen time-index column must drive temporal adjacency, so its own
     gaps (separate sessions, irregular sampling) break the chain."""

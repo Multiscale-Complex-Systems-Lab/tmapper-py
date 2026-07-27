@@ -10,6 +10,7 @@ tmapper is not yet published to PyPI, so install it directly from GitHub.
 | **numpy, scipy, networkx** | installed automatically as dependencies |
 | **matplotlib, python-igraph** | optional, needed for `plot_tmgraph` / `plot_tmgraph_tcm` (the `[plot]` extra) — igraph provides the DrL layout algorithm |
 | **pyvis** | optional, needed only for `plot_tmgraph_interactive` (also in the `[plot]` extra) |
+| **streamlit** | optional, only for the [interactive app](app.md) (the `[app]` extra, which also pulls in the plotting deps) |
 
 ## Get the code
 
@@ -31,6 +32,13 @@ If you don't need plotting, the bare install is lighter:
 
 ```bash
 pip install -e .
+```
+
+To run the point-and-click [interactive app](app.md) as well:
+
+```bash
+pip install -e ".[app]"
+streamlit run app/streamlit_app.py
 ```
 
 ## Verify the install
