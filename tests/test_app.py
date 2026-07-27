@@ -1,4 +1,4 @@
-"""Tests for app/streamlit_app.py, run headlessly via Streamlit's AppTest
+"""Tests for src/tmapper/app/streamlit_app.py, run headlessly via Streamlit's AppTest
 (no browser needed). Mirrors the MATLAB GUI's tests/test_gui_app.m in
 spirit: exercise the real app end to end rather than testing the pipeline
 logic in isolation.
@@ -24,8 +24,13 @@ import pytest
 pytest.importorskip("streamlit")
 from streamlit.testing.v1 import AppTest
 
-APP_PATH = str(Path(__file__).resolve().parent.parent / "app" / "streamlit_app.py")
-REPO_ROOT = Path(APP_PATH).resolve().parent.parent
+from tmapper import sample_data_path
+
+APP_PATH = str(
+    Path(__file__).resolve().parent.parent
+    / "src" / "tmapper" / "app" / "streamlit_app.py"
+)
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # the bundled sample's recent slice contains exactly 6 rows with a missing
 # value among tmax/tmin/prcp -- real data, so the missing-data path below
@@ -45,7 +50,7 @@ def app():
 
 @pytest.fixture(scope="module")
 def sample_df(app):
-    df, _dropped = app.read_csv_smart(REPO_ROOT / "sampledata" / "EL_temp.csv")
+    df, _dropped = app.read_csv_smart(sample_data_path())
     return df.iloc[53883:].reset_index(drop=True)
 
 
@@ -407,7 +412,7 @@ def test_tidx_matches_the_grid_under_downsampling(
 
 def _seasoned(app_mod):
     """Sample slice plus a genuine categorical column."""
-    df, _ = app_mod.read_csv_smart(REPO_ROOT / "sampledata" / "EL_temp.csv")
+    df, _ = app_mod.read_csv_smart(sample_data_path())
     df = df.iloc[53883:54600].reset_index(drop=True)
     df["season"] = pd.cut(
         df["Date"].dt.month % 12 // 3, bins=[-1, 0, 1, 2, 3],
@@ -421,7 +426,7 @@ def test_date_strings_are_parsed_like_matlab(app):
     tmapper_demo.m can use dat.Date directly. pandas leaves them as text, so
     the app parses them -- otherwise a perfectly good time column is unusable.
     """
-    df, _ = app.read_csv_smart(REPO_ROOT / "sampledata" / "EL_temp.csv")
+    df, _ = app.read_csv_smart(sample_data_path())
     assert pd.api.types.is_datetime64_any_dtype(df["Date"])
     assert app.datetime_columns(df) == ["Date"]
     # but it must stay out of the *state variables*: distances need numbers
@@ -441,7 +446,7 @@ def test_short_text_columns_are_not_mangled_into_dates(app):
 def test_datetime_column_works_as_a_time_index(app):
     """Daily dates should give one tidx step per day -- and real missing
     days then show up as genuine gaps rather than being bridged."""
-    df, _ = app.read_csv_smart(REPO_ROOT / "sampledata" / "EL_temp.csv")
+    df, _ = app.read_csv_smart(sample_data_path())
     df = df.iloc[53883:].reset_index(drop=True)
     built = app.build_network(
         df, ("tmax", "tmin", "prcp"), True, 0, 800, 1, 0, 1,
@@ -494,7 +499,7 @@ def test_colormap_lists_are_type_appropriate(app):
     ],
 )
 def test_generated_code_runs_for_every_colour_type(
-    app, monkeypatch, color_var, color_kind, cmap, must_contain
+    app, monkeypatch, tmp_path, color_var, color_kind, cmap, must_contain
 ):
     """The generated script must actually execute for each colour type.
 
@@ -521,7 +526,9 @@ def test_generated_code_runs_for_every_colour_type(
         assert "import matplotlib.dates as mdates" in code, \
             "date colouring needs its import emitted, or the script raises NameError"
 
-    monkeypatch.chdir(REPO_ROOT)
+    # generated scripts locate the sample via sample_data_path(), so they no
+    # longer depend on the working directory -- run from elsewhere to prove it
+    monkeypatch.chdir(tmp_path)
     ns = {"dat": dat}
     exec(compile(code, "<generated>", "exec"), ns)  # noqa: S102
     assert ns["g_simp"].number_of_nodes() == built["g_simp"].number_of_nodes()
@@ -820,10 +827,7 @@ def test_export_artifacts_are_valid_and_consistent(monkeypatch):
     app = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(app)
 
-    repo_root = Path(APP_PATH).resolve().parent.parent
-    monkeypatch.chdir(repo_root)
-
-    df, _dropped = app.read_csv_smart(repo_root / "sampledata" / "EL_temp.csv")
+    df, _dropped = app.read_csv_smart(sample_data_path())
     df = df.iloc[53883:].reset_index(drop=True)
     selected = tuple(app.numeric_columns(df))
 
@@ -887,10 +891,9 @@ def test_generated_code_is_self_contained_and_reproduces_the_build(tmp_path, mon
     assert "pd.read_csv(" in code, "generated code must include the data-loading step."
     assert "dat = " in code, "generated code must actually define `dat`."
 
-    # run it standalone, from the repo root so the relative sampledata/
-    # path in the generated loader resolves
-    repo_root = Path(__file__).resolve().parent.parent
-    monkeypatch.chdir(repo_root)
+    # run it standalone from an unrelated directory: the generated loader
+    # uses sample_data_path(), so it must not depend on the working directory
+    monkeypatch.chdir(tmp_path)
     ns = {}
     exec(compile(code, "<generated>", "exec"), ns)  # noqa: S102
 

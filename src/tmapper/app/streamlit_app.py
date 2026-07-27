@@ -31,9 +31,12 @@ import streamlit.components.v1 as components
 from scipy.spatial.distance import cdist
 from scipy.stats import zscore as scipy_zscore
 
-from tmapper import tknndigraph, filtergraph, plot_tmgraph_interactive, tcm_distance
+from tmapper import (
+    tknndigraph, filtergraph, plot_tmgraph_interactive, tcm_distance,
+    sample_data_path,
+)
 
-SAMPLE_DATA_PATH = Path(__file__).resolve().parent.parent / "sampledata" / "EL_temp.csv"
+SAMPLE_DATA_PATH = sample_data_path()
 
 # cap on the main content column (see the CSS in main()) -- wide enough for
 # the network to breathe, narrow enough that plots stay readable rather than
@@ -880,7 +883,8 @@ def main():
             # in memory (57709 rows would need ~25 GiB).
             sample_df, dropped_col = read_csv_smart(SAMPLE_DATA_PATH)
             sample_df = sample_df.iloc[53883:].reset_index(drop=True)
-            src = ['dat = pd.read_csv("sampledata/EL_temp.csv")']
+            src = ["from tmapper import sample_data_path",
+                   "dat = pd.read_csv(sample_data_path())"]
             if dropped_col:
                 src.append("dat = dat.drop(columns=dat.columns[0])  # stray unnamed index column")
             src.append("dat = dat.iloc[53883:].reset_index(drop=True)  # recent slice, as in the Quickstart")

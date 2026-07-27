@@ -1,6 +1,6 @@
 # Interactive App
 
-`app/streamlit_app.py` is a point-and-click front end for the same
+The app is a point-and-click front end for the same
 `tknndigraph` → `filtergraph` → plotting pipeline the
 [Quickstart](quickstart.md) walks through in code. Load data, pick variables,
 turn the parameters, and explore the resulting network in your browser —
@@ -32,19 +32,18 @@ loop to get from one to the other.
 
 ## Install and launch
 
-The app's dependencies live in an optional extra:
+The app ships with the package, behind an optional extra:
 
 ```bash
-pip install -e ".[app]"     # streamlit + matplotlib + igraph + pyvis
-```
-
-Then, from the repository root:
-
-```bash
-streamlit run app/streamlit_app.py
+pip install "tmapper[app]"
+tmapper-app
 ```
 
 A browser tab opens automatically on `localhost:8501`. Stop it with `Ctrl+C`.
+`tmapper-app` passes any extra arguments straight through to Streamlit, so
+`tmapper-app --server.port 8600` works as you would expect.
+
+From a clone, `pip install -e ".[app]"` then the same command.
 
 !!! tip "Opening it on another device"
     Add `--server.address 0.0.0.0` and visit `http://<your-machine-ip>:8000`
@@ -55,7 +54,7 @@ A browser tab opens automatically on `localhost:8501`. Stop it with `Ctrl+C`.
 
 ### Data
 
-**Load sample data** uses the bundled `sampledata/EL_temp.csv`, trimmed to the
+**Try sample data** uses the bundled East Lansing weather CSV, trimmed to the
 same recent slice as the Quickstart. **Upload** takes any CSV or TXT.
 
 Only numeric columns are offered as build variables. A leading unnamed column

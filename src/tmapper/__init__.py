@@ -1,3 +1,4 @@
+from .sample_data import sample_data_path
 from .tknndigraph import tknndigraph
 from .filtergraph import filtergraph
 from .labeling import find_node_label
@@ -28,6 +29,7 @@ from .graph_utils import (
 )
 
 __all__ = [
+    "sample_data_path",
     "tknndigraph",
     "filtergraph",
     "find_node_label",
