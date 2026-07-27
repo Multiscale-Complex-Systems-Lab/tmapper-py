@@ -21,9 +21,13 @@ All ported functions were cross-checked node-for-node and edge-for-edge against 
 ## Installation
 
 ```bash
-pip install tmapper                 # library
-pip install "tmapper[app]"          # library + the interactive app
+pip install tmapper-py                 # library
+pip install "tmapper-py[app]"          # library + the interactive app
 ```
+
+(The distribution is `tmapper-py` -- `tmapper` alone isn't available on PyPI,
+see [Installation](https://multiscale-complex-systems-lab.github.io/tmapper-py/installation/).
+Everything imports as `import tmapper` either way.)
 
 For development, from a clone:
 
@@ -38,7 +42,7 @@ pip install -e ".[app,test]"
 Prefer point-and-click? `tmapper-app` runs the same pipeline in your browser -- load data, pick variables, turn the parameters, and explore the network without writing any code:
 
 ```bash
-pip install "tmapper[app]"
+pip install "tmapper-py[app]"
 tmapper-app
 ```
 

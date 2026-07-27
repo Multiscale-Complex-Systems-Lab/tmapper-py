@@ -2,7 +2,15 @@
 # .github/workflows/publish.yml
 #
 # Builds the distributions and uploads them to PyPI when a GitHub Release is
-# published, so `pip install tmapper` works.
+# published, so `pip install tmapper-py` works.
+#
+# The distribution is named `tmapper-py`, not `tmapper`: PyPI's automated
+# anti-typosquatting check rejects new registrations that are a small edit
+# distance from an existing project, and `tmapper` is exactly one character
+# from `mapper` (an existing, similarly-themed topological data analysis
+# package). The importable module is unaffected -- it's still `import
+# tmapper` either way (see pyproject.toml's `name` vs
+# [tool.setuptools.packages.find]).
 #
 # Uses PyPI "Trusted Publishing" (OpenID Connect) rather than an API token:
 # PyPI is configured to trust *this repository and workflow*, and GitHub
@@ -15,7 +23,7 @@
 # 1. Create the project on PyPI via a trusted publisher:
 #      https://pypi.org/manage/account/publishing/
 #    Fill in:
-#      PyPI project name : tmapper
+#      PyPI project name : tmapper-py
 #      Owner             : Multiscale-Complex-Systems-Lab
 #      Repository name   : tmapper-py
 #      Workflow name     : publish.yml

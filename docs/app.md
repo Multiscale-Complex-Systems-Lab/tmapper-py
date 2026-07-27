@@ -35,7 +35,7 @@ loop to get from one to the other.
 The app ships with the package, behind an optional extra:
 
 ```bash
-pip install "tmapper[app]"
+pip install "tmapper-py[app]"
 tmapper-app
 ```
 

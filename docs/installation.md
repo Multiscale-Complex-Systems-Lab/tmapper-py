@@ -1,9 +1,17 @@
 # Installation
 
 ```bash
-pip install tmapper                 # library
-pip install "tmapper[app]"          # library + the interactive app
+pip install tmapper-py                 # library
+pip install "tmapper-py[app]"          # library + the interactive app
 ```
+
+!!! note "Why `tmapper-py` and not `tmapper`"
+    The importable module is `tmapper` either way (`import tmapper`) — only
+    the PyPI distribution name differs. Plain `tmapper` isn't available:
+    PyPI's automated anti-typosquatting check blocks new registrations that
+    are a small edit distance from an existing project, and `tmapper` is
+    exactly one character from the existing `mapper` package (a similarly
+    themed topological data analysis tool).
 
 That is all most people need. The sections below cover installing from a
 clone instead, which you want if you intend to modify the code.
@@ -19,12 +27,9 @@ clone instead, which you want if you intend to modify the code.
 | **streamlit** | optional, only for the [interactive app](app.md) (the `[app]` extra, which also pulls in the plotting deps) |
 
 !!! note "Trying a pre-release from TestPyPI"
-    Release candidates are rehearsed on TestPyPI first. Those builds need
-    PyPI as a fallback index, because tmapper's dependencies only live
-    there. The project name there is **`tmapper-py`**, not `tmapper` — the
-    latter is squatted on TestPyPI by an unrelated placeholder package, so
-    rehearsals publish under this repo's name instead. This only affects
-    the rehearsal index; the installed module is still `tmapper`.
+    Release candidates are rehearsed on TestPyPI first, under the same
+    `tmapper-py` name as the real release. Those builds need PyPI as a
+    fallback index, because tmapper's dependencies only live there:
 
     ```bash
     pip install --index-url https://test.pypi.org/simple/ \

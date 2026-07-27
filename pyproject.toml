@@ -3,7 +3,12 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "tmapper"
+# Distribution name on PyPI, not the importable module (that's still
+# `tmapper`, see [tool.setuptools.packages.find] below). Plain "tmapper" is
+# blocked there by PyPI's anti-typosquatting check: it's a 1-character edit
+# from the existing "mapper" package (a similarly-themed topological data
+# analysis tool), which is exactly the pattern that check exists to catch.
+name = "tmapper-py"
 version = "0.1.0"
 description = "Python port of Temporal Mapper 2 -- build attractor transition networks from time-series data"
 readme = "README.md"
@@ -51,7 +56,7 @@ test = ["pytest>=7.0", "pandas>=1.5"]
 docs = ["mkdocs-material>=9.5", "mkdocstrings[python]>=0.25"]
 
 [project.scripts]
-# `pip install "tmapper[app]"` then just `tmapper-app`
+# `pip install "tmapper-py[app]"` then just `tmapper-app`
 tmapper-app = "tmapper.app.launcher:main"
 
 [project.urls]

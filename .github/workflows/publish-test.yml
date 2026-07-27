@@ -24,20 +24,20 @@
 #    above.
 #
 # ---------------------------------------------------------------------------
-# WHY THE PROJECT IS PUBLISHED AS "tmapper-py", NOT "tmapper"
+# WHY THE PROJECT IS "tmapper-py", NOT "tmapper"
 #
-# The real package is named `tmapper` (see pyproject.toml), but that name is
-# squatted on TestPyPI by an unrelated project (a "Placeholder for internal
-# package" uploaded by a different account in 2024) -- ordinary TestPyPI
-# squatting, since it's a free-for-all sandbox with no cleanup. Real PyPI
-# still has `tmapper` free; this only affects the rehearsal index.
+# `pyproject.toml` already names the distribution `tmapper-py` -- not just
+# for this rehearsal, that's the real, permanent name. `tmapper` alone isn't
+# available on PyPI: it's a one-character edit from the existing `mapper`
+# package (a similarly-themed topological data analysis tool), which trips
+# PyPI's automated anti-typosquatting block on *new* registrations. (As it
+# happens, `tmapper` was also separately squatted on TestPyPI by an unrelated
+# placeholder project from 2024 -- ordinary sandbox squatting, a different
+# problem, but it meant the same rename was needed here regardless.)
 #
-# So the build step below renames the project to `tmapper-py` (this repo's
-# name) purely for the TestPyPI upload, in a scratch copy of pyproject.toml
-# that is never committed. This changes only the *distribution* name (what
-# `pip install` and extras like `tmapper-py[app]` refer to) -- the wheel's
-# importable module is still named `tmapper` regardless, so `import tmapper`
-# and `sample_data_path()` etc. work unchanged once installed.
+# The importable module is unaffected either way -- it's still `import
+# tmapper`, since that's determined by the package directory
+# ([tool.setuptools.packages.find]), not the distribution `name`.
 #
 # ---------------------------------------------------------------------------
 # WHY THE VERSION GETS A SUFFIX
@@ -70,23 +70,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      # Edits the working copy only -- nothing is committed. Unconditional
-      # (unlike the version bump below): the name collision is permanent,
-      # not something that only bites on a rerun.
-      - name: Rename the project for the TestPyPI rehearsal
-        run: |
-          python - <<'PY'
-          import pathlib, re
-          p = pathlib.Path("pyproject.toml")
-          s = p.read_text(encoding="utf-8")
-          s, n = re.subn(
-              r'^name = "tmapper"$', 'name = "tmapper-py"', s, count=1, flags=re.M,
-          )
-          assert n == 1, "could not find the project name line in pyproject.toml"
-          p.write_text(s, encoding="utf-8")
-          print(re.search(r'^name = .*', s, re.M).group(0))
-          PY
 
       # Edits the working copy only -- nothing is committed.
       - name: Make the rehearsal version unique
