@@ -443,6 +443,25 @@ def test_short_text_columns_are_not_mangled_into_dates(app):
     assert app.categorical_columns(df) == ["cond"]
 
 
+def test_date_parsing_survives_pandas_3s_default_string_dtype(app):
+    """CI caught a real bug this exact local suite couldn't see: pandas 3.x's
+    read_csv defaults text columns to its own "string" dtype rather than
+    `object`, and _maybe_datetime used to gate on `col.dtype == object`
+    exactly -- so under a newer pandas, date parsing silently never ran at
+    all (no error, just a Date column nobody could pick as a time axis).
+
+    `future.infer_string` is pandas 2.x's own forward-compat switch for this
+    behaviour, so it reproduces the failure locally without needing a
+    different pandas installed.
+    """
+    with pd.option_context("future.infer_string", True):
+        col = pd.Series(["2020-01-01", "2020-01-02", "2020-01-03"])
+        assert col.dtype != object, "test setup didn't reproduce pandas 3's dtype"
+        parsed = app._maybe_datetime(col)
+        assert parsed is not None
+        assert pd.api.types.is_datetime64_any_dtype(parsed)
+
+
 def test_datetime_column_works_as_a_time_index(app):
     """Daily dates should give one tidx step per day -- and real missing
     days then show up as genuine gaps rather than being bridged."""

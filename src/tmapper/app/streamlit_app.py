@@ -150,7 +150,16 @@ def _maybe_datetime(col):
     Requires nearly every non-empty value to parse, so a categorical column
     of short strings isn't mangled into nonsense timestamps.
     """
-    if col.dtype != object:
+    # Excluding by dtype rather than requiring exactly `object`: pandas 3.x's
+    # read_csv defaults text columns to its own "string" dtype instead of
+    # object, so a strict `== object` check silently stopped matching any
+    # text column at all under a newer pandas -- dates just never parsed,
+    # with no error.
+    if (
+        pd.api.types.is_numeric_dtype(col)
+        or pd.api.types.is_datetime64_any_dtype(col)
+        or pd.api.types.is_bool_dtype(col)
+    ):
         return None
     present = int(col.notna().sum())
     if present == 0:
