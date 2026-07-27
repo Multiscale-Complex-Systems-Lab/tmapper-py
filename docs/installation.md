@@ -18,6 +18,15 @@ clone instead, which you want if you intend to modify the code.
 | **pyvis** | optional, needed only for `plot_tmgraph_interactive` (also in the `[plot]` extra) |
 | **streamlit** | optional, only for the [interactive app](app.md) (the `[app]` extra, which also pulls in the plotting deps) |
 
+!!! note "Trying a pre-release from TestPyPI"
+    Release candidates are rehearsed on TestPyPI first. Those builds need
+    PyPI as a fallback index, because tmapper's dependencies only live
+    there:
+
+    ```bash
+    pip install --index-url https://test.pypi.org/simple/                 --extra-index-url https://pypi.org/simple/                 --pre "tmapper[app]"
+    ```
+
 ## Installing from a clone (for development)
 
 ```bash
