@@ -1,5 +1,10 @@
 # tmapper (Python)
 
+[![PyPI](https://img.shields.io/pypi/v/tmapper-py)](https://pypi.org/project/tmapper-py/)
+[![Python](https://img.shields.io/pypi/pyversions/tmapper-py)](https://pypi.org/project/tmapper-py/)
+[![Tests](https://github.com/Multiscale-Complex-Systems-Lab/tmapper-py/actions/workflows/tests.yml/badge.svg)](https://github.com/Multiscale-Complex-Systems-Lab/tmapper-py/actions/workflows/tests.yml)
+[![License](https://img.shields.io/pypi/l/tmapper-py)](LICENSE)
+
 A Python port of [Temporal Mapper 2](https://github.com/Multiscale-Complex-Systems-Lab/tmapper2), a toolbox for building **attractor transition networks** from time-series data.
 
 **Status: feature-complete port.** Both the core two-step pipeline (`tknndigraph` + `filtergraph` + plotting) and the secondary cycle/path analysis toolkit (cycle counting/clustering, path decomposition, traffic, modularity) are ported and tested. `tknngraph.m` (a legacy, unused MATLAB function) was intentionally not ported.

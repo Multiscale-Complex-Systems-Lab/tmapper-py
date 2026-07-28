@@ -10,6 +10,15 @@ It generalizes the original, fMRI-specific
 into a general-purpose tool for characterizing complex dynamics across
 disciplines and data types.
 
+```bash
+pip install tmapper-py                 # library
+pip install "tmapper-py[app]"          # library + the interactive app
+```
+
+Then head to the [Quickstart](quickstart.md), or launch the point-and-click
+[app](app.md) with `tmapper-app`. (The distribution is named `tmapper-py`;
+it imports as `import tmapper` — see [Installation](installation.md).)
+
 ![An attractor transition network built from East Lansing weather data.](assets/EL_temp_graph.png)
 /// caption
 An attractor transition network built by tmapper from historical East Lansing
