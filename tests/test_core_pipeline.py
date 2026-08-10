@@ -222,3 +222,29 @@ def test_filtergraph_input_validation():
     g, _ = tknndigraph(Dd, kd, tidxd)
     with pytest.raises(ValueError):
         filtergraph(g, -1)  # non-positive threshold
+
+
+def test_compute_dsimp_false_skips_only_that_output():
+    """D_simp is the most expensive step in filtergraph and nothing in the
+    toolbox consumes it, so it can be skipped -- but skipping it must not
+    disturb anything else."""
+    rng = np.random.RandomState(0)
+    N = 150
+    X = np.column_stack([
+        np.sin(np.arange(N) / 12),
+        np.cos(np.arange(N) / 12),
+        np.cumsum(rng.randn(N)) / 20,
+    ])
+    g, _ = tknndigraph(X, 3, np.arange(N), time_exclude_range=5)
+
+    gs_a, mem_a, ns_a, D_a = filtergraph(g, 3, reciprocal=True)
+    gs_b, mem_b, ns_b, D_b = filtergraph(g, 3, reciprocal=True, compute_dsimp=False)
+
+    assert D_a is not None, "D_simp should be computed by default."
+    assert D_b is None, "compute_dsimp=False should return None for D_simp."
+    assert np.array_equal(
+        nx.to_numpy_array(gs_a, nodelist=sorted(gs_a.nodes())),
+        nx.to_numpy_array(gs_b, nodelist=sorted(gs_b.nodes())),
+    ), "skipping D_simp must not change the simplified graph."
+    assert mem_a == mem_b, "skipping D_simp must not change the members."
+    assert np.array_equal(ns_a, ns_b), "skipping D_simp must not change nodesize."

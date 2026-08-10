@@ -2,11 +2,12 @@
 
 import numpy as np
 import networkx as nx
+import scipy.sparse as sp
 
 from ._shortest_path import all_pairs_distance
 
 
-def filtergraph(g, d, *, reciprocal=True):
+def filtergraph(g, d, *, reciprocal=True, compute_dsimp=True):
     """Contract a graph ``g`` into a simplified graph (a Mapper-style shape
     graph) by merging nodes that are within geodesic distance ``d`` of one
     another.
@@ -23,6 +24,10 @@ def filtergraph(g, d, *, reciprocal=True):
     d : float
         Threshold under which original nodes are collapsed together. Must
         be a positive real number.
+    compute_dsimp : bool, default True
+        Whether to compute the ``D_simp`` output. It is the most expensive
+        remaining step and nothing in the toolbox itself consumes it, so
+        pass ``False`` to skip it and get ``None`` back.
     reciprocal : bool, default True
         Whether to require both the path length from x to y *and* from y
         to x to be under ``d`` (True), or either direction (False).
@@ -38,9 +43,9 @@ def filtergraph(g, d, *, reciprocal=True):
         into your original data, not real time labels.
     nodesize : numpy.ndarray, shape (n_new,)
         Number of original-graph members in each new node.
-    D_simp : numpy.ndarray, shape (n_new, n_new)
+    D_simp : numpy.ndarray, shape (n_new, n_new), or None
         Shortest "distance" (from the original graph) between each pair
-        of new nodes' member sets.
+        of new nodes' member sets. ``None`` when ``compute_dsimp=False``.
     """
     if not isinstance(g, (nx.Graph, nx.DiGraph)):
         raise ValueError("g must be a networkx Graph or DiGraph.")
@@ -88,18 +93,29 @@ def filtergraph(g, d, *, reciprocal=True):
     ]
     nodesize = np.array([len(m) for m in members])
 
-    D_sorted = D[np.ix_(order, order)]
-    A_sorted = A[np.ix_(order, order)]
-
-    # -- define distance between new nodes: shortest path between member sets
-    D_row = np.minimum.reduceat(D_sorted, group_start, axis=0)
-    D_simp = np.minimum.reduceat(D_row, group_start, axis=1)
-
-    # -- construct simplified graph: A_simp(n,m) = average connectivity between blocks
-    A_row_sum = np.add.reduceat(A_sorted, group_start, axis=0)
-    A_col_sum = np.add.reduceat(A_row_sum, group_start, axis=1)
     group_sizes = np.diff(group_bounds)
-    A_simp = A_col_sum / np.outer(group_sizes, group_sizes)
+
+    # -- construct simplified graph: A_simp(n,m) = average connectivity
+    # between blocks. Summing over blocks IS a matrix product: with S the
+    # (n_new, Nn) group-indicator matrix, S @ A @ S.T is the block-sum in
+    # one sparse call, instead of two reduceat passes over a reordered
+    # copy of A. That also drops the A[np.ix_(order, order)] fancy-index
+    # copy, a full Nn-by-Nn temporary.
+    S = sp.csr_matrix(
+        (np.ones(Nn), (idx_newnodes, np.arange(Nn))), shape=(n_new, Nn)
+    )
+    A_simp = np.asarray((S @ sp.csr_matrix(A) @ S.T).todense())
+    A_simp /= np.outer(group_sizes, group_sizes)
+
+    # -- define distance between new nodes: shortest path between member
+    # sets. Block-min has no matrix-product equivalent, so it keeps the
+    # reduceat pass -- but only when the caller wants it.
+    if compute_dsimp:
+        D_sorted = D[np.ix_(order, order)]
+        D_row = np.minimum.reduceat(D_sorted, group_start, axis=0)
+        D_simp = np.minimum.reduceat(D_row, group_start, axis=1)
+    else:
+        D_simp = None
 
     g_simp = nx.from_numpy_array(A_simp, create_using=nx.DiGraph)
     g_simp.remove_edges_from(nx.selfloop_edges(g_simp))  # OmitSelfLoops

@@ -502,7 +502,11 @@ def build_network(
         max_neighbor_dist=maxdist,
         reciprocal=reciprocal,
     )
-    g_simp, members, _nodesize, _D_simp = filtergraph(g, d, reciprocal=reciprocal)
+    # compute_dsimp=False: D_simp is the most expensive step in filtergraph
+    # and this app discards it, as the underscore made plain.
+    g_simp, members, _nodesize, _ = filtergraph(
+        g, d, reciprocal=reciprocal, compute_dsimp=False
+    )
 
     return {
         "g_simp": g_simp, "members": members, "rows": rows, "tidx": tidx,

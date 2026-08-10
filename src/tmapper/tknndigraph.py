@@ -129,42 +129,56 @@ def tknndigraph(
     t_wafter = tidx_next - 1 == tidx
 
     # t_after_idx1: unconditional immediate temporal edges i -> i+1
+    # Built by index arithmetic rather than a Python loop over rows: the
+    # bands are just the pairs (i, i+n) for the i that have a temporal
+    # successor.
+    i_after = np.flatnonzero(t_wafter)
     t_after_idx1 = np.zeros((Nn, Nn), dtype=bool)
-    for i in range(Nn):
-        if t_wafter[i]:
-            t_after_idx1[i, (i + 1) % Nn] = True
+    t_after_idx1[i_after, (i_after + 1) % Nn] = True
 
     # t_after_idx: temporal-exclusion mask, extended up to time_exclude_range
     # steps, restricted to strictly-forward (i < j) positions
     t_after_idx = np.zeros((Nn, Nn), dtype=bool)
     for n in range(1, time_exclude_range + 1):
-        for i in range(Nn):
-            if t_wafter[i]:
-                t_after_idx[i, (i + n) % Nn] = True
-    upper = np.triu(np.ones((Nn, Nn), dtype=bool), k=1)
-    t_after_idx = t_after_idx & upper
+        cols = (i_after + n) % Nn
+        # keep only strictly-forward pairs, which is what the triu below
+        # used to do -- doing it here avoids allocating a whole Nn-by-Nn
+        # mask of ones purely to AND against.
+        fwd = cols > i_after
+        t_after_idx[i_after[fwd], cols[fwd]] = True
 
     if time_exclude_space:
         D[t_after_idx] = np.inf
 
     # -- compute adjacency matrix (k nearest neighbors per row)
-    order = np.argsort(D, axis=1, kind="stable")
-    D_sorted = np.take_along_axis(D, order, axis=1)
+    # argpartition, not a full argsort: only the k nearest per row are ever
+    # used, and k is typically single digits while a full sort of every row
+    # costs ~10x as much. Ties are still picked up by the D <= dmax pass
+    # below, so which of several equal-distance neighbours lands in the
+    # first k does not matter.
+    part = np.argpartition(D, k - 1, axis=1)[:, :k]
+    D_k = np.take_along_axis(D, part, axis=1)
     A = np.zeros((Nn, Nn), dtype=bool)
     rows = np.repeat(np.arange(Nn), k)
-    cols = order[:, :k].ravel()
-    A[rows, cols] = True
+    A[rows, part.ravel()] = True
 
     # -- check for duplicate points: any other point tied with the k-th
     # nearest neighbor's distance is also included
-    dmax = D_sorted[:, k - 1][:, None]
+    dmax = D_k.max(axis=1)[:, None]  # the k-th smallest distance per row
     A |= D <= dmax
 
     # -- get distance threshold (the stricter of the absolute and percentile caps).
     # NOTE: matches MATLAB's prctile(D(:), Prct) exactly by computing the
     # percentile over the *full* D, Inf entries included (the masked
     # diagonal/temporal-exclusion entries) -- not just the finite values.
-    prct_dist = _percentile_with_inf(D, max_neighbor_dist_prct)
+    if max_neighbor_dist_prct >= 100.0:
+        # At the default there is nothing to compute: D's masked entries are
+        # inf, so the 100th percentile is always inf and the absolute cutoff
+        # wins. Sorting all Nn^2 distances to learn that dominated this
+        # function.
+        prct_dist = np.inf
+    else:
+        prct_dist = _percentile_with_inf(D, max_neighbor_dist_prct)
     resolved_max_dist = min(prct_dist, max_neighbor_dist)
     par["max_neighbor_dist"] = resolved_max_dist
 
