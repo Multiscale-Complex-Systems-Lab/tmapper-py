@@ -168,9 +168,15 @@ def tknndigraph(
     A |= D <= dmax
 
     # -- get distance threshold (the stricter of the absolute and percentile caps).
-    # NOTE: matches MATLAB's prctile(D(:), Prct) exactly by computing the
-    # percentile over the *full* D, Inf entries included (the masked
-    # diagonal/temporal-exclusion entries) -- not just the finite values.
+    # The percentile is taken over FINITE distances only. By this point D
+    # holds inf wherever a pair is already barred from being a spatial
+    # neighbor -- the diagonal, and every temporal pair within
+    # time_exclude_range -- and those infs sit at the top of the
+    # distribution, so counting them dragged the cutoff upward and made it
+    # more permissive than asked for. With texclude=30 on 1500 points the
+    # 99th percentile came out as inf outright: a request to drop the most
+    # distant 1% of neighbors silently applied no cutoff at all.
+    # Matches MATLAB tmapper2 v2.2, which made the same correction.
     if max_neighbor_dist_prct >= 100.0:
         # At the default there is nothing to compute: D's masked entries are
         # inf, so the 100th percentile is always inf and the absolute cutoff
@@ -178,7 +184,20 @@ def tknndigraph(
         # function.
         prct_dist = np.inf
     else:
-        prct_dist = _percentile_with_inf(D, max_neighbor_dist_prct)
+        finite_D = D[np.isfinite(D)]
+        if finite_D.size == 0:
+            prct_dist = np.inf  # nothing finite to take a percentile of
+        else:
+            # method="hazen": numpy's DEFAULT ("linear") uses plotting
+            # positions i/(n-1), while MATLAB's prctile uses (i-0.5)/n.
+            # Those genuinely differ -- prctile([1 2 3 4 5], 95) is 5 but
+            # np.percentile(..., 95) is 4.8 -- so the port had been
+            # resolving a slightly different cutoff than the MATLAB
+            # original it is checked against. Hazen IS (i-0.5)/n, and
+            # reproduces prctile exactly.
+            prct_dist = float(
+                np.percentile(finite_D, max_neighbor_dist_prct, method="hazen")
+            )
     resolved_max_dist = min(prct_dist, max_neighbor_dist)
     par["max_neighbor_dist"] = resolved_max_dist
 

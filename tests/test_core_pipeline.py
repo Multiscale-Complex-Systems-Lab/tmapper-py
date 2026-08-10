@@ -100,7 +100,11 @@ def test_max_neighbor_dist_prct_matches_equivalent_absolute():
     np.fill_diagonal(D_masked, np.inf)
     for i in range(5):
         D_masked[i, i + 1] = np.inf
-    equivalent_threshold = np.percentile(D_masked, prct)
+    # finite entries only, and MATLAB's (i-0.5)/n convention -- see
+    # tknndigraph's note on method="hazen".
+    equivalent_threshold = np.percentile(
+        D_masked[np.isfinite(D_masked)], prct, method="hazen"
+    )
 
     g_prct, _ = tknndigraph(Dd, kd, tidxd, max_neighbor_dist_prct=prct)
     g_equiv, _ = tknndigraph(Dd, kd, tidxd, max_neighbor_dist=equivalent_threshold)
