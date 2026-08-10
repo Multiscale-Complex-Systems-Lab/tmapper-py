@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 import networkx as nx
 
-from tmapper import tknndigraph, filtergraph
+from tmapper import tknndigraph, filtergraph, tcm_distance
 
 
 # -- deterministic dataset: 6 points on a line, two well-separated triples
@@ -388,4 +388,98 @@ def test_prct_100_short_circuits_to_no_cutoff():
     )
     assert par2["max_neighbor_dist"] == 0.5, (
         "the absolute cutoff should win at prct=100."
+    )
+
+
+def test_reachability_route_matches_the_dense_route():
+    """With compute_dsimp=False on an unweighted graph, filtergraph
+    thresholds geodesics by sparse reachability instead of computing the
+    all-pairs shortest path. Same answer, or the shortcut is not valid.
+
+    Fractional d is included deliberately: hop counts are integers, so
+    d=3 admits 1-2 hops while d=3.5 admits 1-3, and getting that boundary
+    wrong would silently merge or split nodes.
+    """
+    for N in (80, 200):
+        for tex in (1, 5):
+            for dd in (1, 2, 3, 5, 2.5, 3.5):
+                for recip in (True, False):
+                    rng = np.random.RandomState(0)
+                    X = np.column_stack([
+                        np.sin(np.arange(N) / 12),
+                        np.cos(np.arange(N) / 12),
+                        np.cumsum(rng.randn(N)) / 20,
+                    ])
+                    g, _ = tknndigraph(X, 3, np.arange(N), time_exclude_range=tex)
+                    ga, ma, na, _ = filtergraph(g, dd, reciprocal=recip)
+                    gb, mb, nb, Db = filtergraph(
+                        g, dd, reciprocal=recip, compute_dsimp=False
+                    )
+                    assert np.array_equal(
+                        nx.to_numpy_array(ga, nodelist=sorted(ga.nodes())),
+                        nx.to_numpy_array(gb, nodelist=sorted(gb.nodes())),
+                    ), f"routes disagree at N={N}, tex={tex}, d={dd}, recip={recip}"
+                    assert ma == mb and np.array_equal(na, nb)
+                    assert Db is None
+
+
+def test_tcm_distance_fast_path_matches_the_pairwise_loop():
+    """tcm_distance short-circuits when each time point belongs to exactly
+    one node, which is what filtergraph guarantees. Overlapping membership
+    must still fall back to the pairwise loop, where the fmin arbitrates.
+    """
+    N = 200
+    rng = np.random.RandomState(3)
+    X = np.column_stack([
+        np.sin(np.arange(N) / 12),
+        np.cos(np.arange(N) / 12),
+        np.cumsum(rng.randn(N)) / 20,
+    ])
+    g, _ = tknndigraph(X, 3, np.arange(N), time_exclude_range=5)
+    gs, mem, _, _ = filtergraph(g, 3, reciprocal=True, compute_dsimp=False)
+
+    D = tcm_distance(gs, mem)
+    flat = np.concatenate([np.asarray(list(m), dtype=int) for m in mem])
+    assert flat.size == np.unique(flat).size, (
+        "filtergraph members should partition the time points."
+    )
+    assert D.shape == (N, N)
+    assert np.all(np.diag(D) == 0), "a time point is 0 from itself."
+
+    # time points sharing a node are 0 apart
+    big = next((m for m in mem if len(m) > 1), None)
+    if big is not None:
+        ii = np.asarray(list(big), dtype=int)
+        assert np.all(D[np.ix_(ii, ii)] == 0)
+
+    # The fast path must agree with what the definition says, computed here
+    # by an independent loop rather than by calling the fallback -- the
+    # fallback is the same function, so it would not be independent.
+    from tmapper._shortest_path import all_pairs_distance
+    nodelist = list(gs.nodes())
+    dm = all_pairs_distance(gs, nodelist, weight=None)
+    node_of_t = {}
+    for i, m in enumerate(mem):
+        for t in m:
+            node_of_t[int(t)] = i
+    rng2 = np.random.RandomState(11)
+    for _ in range(200):  # spot-check pairs rather than all N^2
+        a_t = int(rng2.randint(N))
+        b_t = int(rng2.randint(N))
+        expected = dm[node_of_t[a_t], node_of_t[b_t]]
+        assert D[a_t, b_t] == expected or (
+            np.isnan(D[a_t, b_t]) and np.isnan(expected)
+        ), f"tcm[{a_t},{b_t}] should be the geodesic between their nodes"
+
+    # overlapping membership takes the loop and must still work
+    g_ov = nx.from_numpy_array(np.array([[0, 1], [1, 0]]), create_using=nx.DiGraph)
+    D_ov = tcm_distance(g_ov, [[0, 1, 2], [2, 3, 4]])
+    assert D_ov.shape == (5, 5)
+    assert D_ov[2, 2] == 0, "a shared time point is still 0 from itself."
+
+    # time points covered by no node stay NaN rather than defaulting to 0
+    D_gap = tcm_distance(g_ov, [[0, 1], [6, 7]])
+    assert D_gap.shape == (8, 8)
+    assert np.all(np.isnan(D_gap[2:6, 2:6])), (
+        "uncovered time points should remain NaN, not 0."
     )

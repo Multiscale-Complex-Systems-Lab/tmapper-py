@@ -57,13 +57,47 @@ def filtergraph(g, d, *, reciprocal=True, compute_dsimp=True):
     idx_of = {node: i for i, node in enumerate(nodelist)}
 
     A = nx.to_numpy_array(g, nodelist=nodelist)  # weighted adjacency (weight 1 if unweighted)
-    D = all_pairs_distance(g, nodelist)  # geodesic distance, inf if unreachable
 
-    # -- connectivity within a distance threshold
-    if reciprocal:
-        A_ = (D < d) & (D.T < d)
+    # -- connectivity within a distance threshold.
+    # The geodesics are only ever compared against d, and for an UNWEIGHTED
+    # graph a geodesic is a hop count -- so "within distance d" is just
+    # "reachable within a bounded number of hops", which sparse boolean
+    # products give without the all-pairs shortest path (the single most
+    # expensive step here: ~5.9s of 7.8s at 8000 nodes).
+    #   Weighted graphs need real shortest paths, and so does D_simp, so
+    # those keep the dense route.
+    A_bool = A != 0
+    is_unweighted = bool(np.all(A[A_bool] == 1)) if A_bool.any() else True
+    # hop counts are integers, so D < d means D <= hmax:
+    #   d integer    -> hmax = d-1       (D<3 admits 1 and 2 hops)
+    #   d fractional -> hmax = floor(d)  (D<3.5 admits 1, 2 and 3)
+    hmax = int(d) - 1 if float(d) == int(d) else int(np.floor(d))
+    use_reach = is_unweighted and np.isfinite(d) and not compute_dsimp
+
+    D = None
+    if use_reach:
+        Ab = sp.csr_matrix(A_bool)
+        R = Ab.copy() if hmax >= 1 else sp.csr_matrix(Ab.shape, dtype=bool)
+        P = Ab
+        for _ in range(2, hmax + 1):
+            P = (P @ Ab).astype(bool)
+            newR = (R + P).astype(bool)
+            if newR.nnz == R.nnz:
+                break  # reachability saturated
+            R = newR
+            if R.nnz > 0.25 * Nn * Nn:
+                use_reach = False  # densifying: sparsity has stopped paying
+                break
+
+    if use_reach:
+        Rd = R.toarray()
+        A_ = (Rd & Rd.T) if reciprocal else (Rd | Rd.T)
     else:
-        A_ = (D < d) | (D.T < d)
+        D = all_pairs_distance(g, nodelist)  # geodesic distance, inf if unreachable
+        if reciprocal:
+            A_ = (D < d) & (D.T < d)
+        else:
+            A_ = (D < d) | (D.T < d)
     np.fill_diagonal(A_, False)  # remove self-loops
 
     # -- create graph out of nodes within said threshold, find connected components
@@ -111,6 +145,8 @@ def filtergraph(g, d, *, reciprocal=True, compute_dsimp=True):
     # sets. Block-min has no matrix-product equivalent, so it keeps the
     # reduceat pass -- but only when the caller wants it.
     if compute_dsimp:
+        if D is None:
+            D = all_pairs_distance(g, nodelist)
         D_sorted = D[np.ix_(order, order)]
         D_row = np.minimum.reduceat(D_sorted, group_start, axis=0)
         D_simp = np.minimum.reduceat(D_row, group_start, axis=1)
