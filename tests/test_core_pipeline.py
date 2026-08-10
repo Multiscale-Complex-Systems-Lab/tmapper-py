@@ -252,3 +252,140 @@ def test_compute_dsimp_false_skips_only_that_output():
     ), "skipping D_simp must not change the simplified graph."
     assert mem_a == mem_b, "skipping D_simp must not change the members."
     assert np.array_equal(ns_a, ns_b), "skipping D_simp must not change nodesize."
+
+
+def _hazen_by_hand(values, prct):
+    """The (i-0.5)/n percentile, written out from the definition.
+
+    Deliberately NOT np.percentile(..., method="hazen") -- that is what the
+    implementation calls, so using it here would make the test agree with
+    the code by construction rather than by being right. MATLAB's prctile
+    places the i-th of n sorted values at percentile 100*(i-0.5)/n and
+    interpolates linearly between them, clamping outside that range.
+    """
+    x = np.sort(np.asarray(values, dtype=float).ravel())
+    n = x.size
+    pos = np.array([100.0 * (i + 0.5) / n for i in range(n)])
+    if prct <= pos[0]:
+        return float(x[0])
+    if prct >= pos[-1]:
+        return float(x[-1])
+    j = np.searchsorted(pos, prct) - 1
+    w = (prct - pos[j]) / (pos[j + 1] - pos[j])
+    return float(x[j] + w * (x[j + 1] - x[j]))
+
+
+def test_percentile_uses_matlabs_convention_not_numpys_default():
+    """MATLAB's prctile and np.percentile's default disagree, and this port
+    is checked against MATLAB.
+
+    prctile places the i-th of n sorted values at 100*(i-0.5)/n; numpy's
+    default "linear" uses i/(n-1). On [1,2,3,4,5] at the 95th percentile
+    that is 5 versus 4.8 -- so picking the wrong one silently resolves a
+    different neighbour cutoff.
+    """
+    x = np.array([1.0, 2, 3, 4, 5])
+    assert _hazen_by_hand(x, 95) == 5.0, "MATLAB's convention gives 5 here."
+    assert abs(np.percentile(x, 95) - 4.8) < 1e-12, "numpy's default gives 4.8."
+
+    # the helper must agree with the method the implementation relies on
+    for vals in (x, np.array([1.0, 3, 7, 10]), np.linspace(0, 1, 9) ** 2):
+        for p in (25, 50, 75, 95, 99):
+            assert abs(
+                _hazen_by_hand(vals, p) - np.percentile(vals, p, method="hazen")
+            ) < 1e-12, f"hand-derived Hazen should match numpy's, p={p}"
+
+    # ...and, the point of all this, tknndigraph must resolve its cutoff the
+    # same way. A small fixture, because the two conventions converge as n
+    # grows and a large one would not tell them apart.
+    N, tex, prct = 8, 3, 95.0
+    rng = np.random.RandomState(0)
+    Xs = np.column_stack([
+        np.sin(np.arange(N) / 3),
+        np.cos(np.arange(N) / 3),
+        np.cumsum(rng.randn(N)) / 5,
+    ])
+    D = np.linalg.norm(Xs[:, None, :] - Xs[None, :, :], axis=2)
+    np.fill_diagonal(D, np.inf)
+    for n in range(1, tex + 1):
+        i = np.arange(N - n)
+        D[i, i + n] = np.inf
+    finite = D[np.isfinite(D)]
+
+    matlab_way = _hazen_by_hand(finite, prct)
+    numpy_way = float(np.percentile(finite, prct))
+    assert abs(matlab_way - numpy_way) > 1e-3, (
+        "this fixture must be one where the two conventions visibly disagree"
+    )
+
+    _, par = tknndigraph(
+        Xs, 3, np.arange(N), time_exclude_range=tex, max_neighbor_dist_prct=prct
+    )
+    assert abs(par["max_neighbor_dist"] - matlab_way) < 1e-12, (
+        f"tknndigraph should resolve MATLAB's percentile ({matlab_way}), "
+        f"not numpy's default ({numpy_way}); got {par['max_neighbor_dist']}"
+    )
+
+
+def test_prct_cutoff_ignores_the_masked_inf_entries():
+    """The percentile must be taken over pairs that could actually be
+    spatial neighbours.
+
+    By the time the cutoff is resolved, D holds inf on the diagonal and on
+    every temporal pair inside time_exclude_range. Those sit at the top of
+    the distribution, so counting them pushes the cutoff up and makes it
+    more permissive than asked for -- at high texclude the percentile can
+    come back as inf outright, applying no cutoff at all.
+    """
+    N = 40
+    rng = np.random.RandomState(0)
+    X = np.column_stack([
+        np.sin(np.arange(N) / 6),
+        np.cos(np.arange(N) / 6),
+        np.cumsum(rng.randn(N)) / 10,
+    ])
+    tidx = np.arange(N)
+    tex, prct = 5, 90.0
+
+    _, par = tknndigraph(
+        X, 3, tidx, time_exclude_range=tex, max_neighbor_dist_prct=prct
+    )
+
+    # rebuild the same masking the function does, then take the percentile
+    # over the finite entries only
+    D = np.linalg.norm(X[:, None, :] - X[None, :, :], axis=2)
+    np.fill_diagonal(D, np.inf)
+    for n in range(1, tex + 1):
+        i = np.arange(N - n)
+        D[i, i + n] = np.inf
+    finite = D[np.isfinite(D)]
+
+    expected = _hazen_by_hand(finite, prct)
+    assert abs(par["max_neighbor_dist"] - expected) < 1e-9, (
+        f"cutoff should come from the finite distances only "
+        f"(expected {expected}, got {par['max_neighbor_dist']})"
+    )
+
+    # and it must genuinely differ from counting the infs, or this proves
+    # nothing about which set was used
+    with_inf = _hazen_by_hand(D.ravel(), prct)
+    assert not np.isclose(with_inf, expected), (
+        "this fixture must be one where including the infs changes the answer"
+    )
+
+
+def test_prct_100_short_circuits_to_no_cutoff():
+    """At the default there is nothing to compute: every masked entry is
+    inf, so the percentile is inf and the absolute cutoff wins."""
+    N = 30
+    X = np.column_stack([np.sin(np.arange(N) / 5), np.cos(np.arange(N) / 5)])
+    _, par = tknndigraph(X, 3, np.arange(N), time_exclude_range=2)
+    assert par["max_neighbor_dist"] == np.inf, (
+        "with no absolute cutoff and prct=100, nothing should be cut."
+    )
+    _, par2 = tknndigraph(
+        X, 3, np.arange(N), time_exclude_range=2, max_neighbor_dist=0.5
+    )
+    assert par2["max_neighbor_dist"] == 0.5, (
+        "the absolute cutoff should win at prct=100."
+    )
