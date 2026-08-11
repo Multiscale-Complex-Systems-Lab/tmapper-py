@@ -2,6 +2,7 @@
 
 import numpy as np
 import networkx as nx
+import scipy.sparse as sp
 from scipy.spatial.distance import cdist
 
 
@@ -40,6 +41,8 @@ def tknndigraph(
     time_exclude_range=1,
     max_neighbor_dist=np.inf,
     max_neighbor_dist_prct=100.0,
+    low_memory=False,
+    block_size=None,
 ):
     """Construct a directed graph based on k-nearest neighbors that also
     includes temporal neighbors (t -> t+1 links).
@@ -75,6 +78,17 @@ def tknndigraph(
     max_neighbor_dist_prct : float, default 100
         Percentile distance cutoff for spatial neighbors. The stricter
         (smaller) of this and ``max_neighbor_dist`` is applied.
+    low_memory : bool, default False
+        Build the graph from ``X`` a block of rows at a time, never
+        allocating an (N, N) array. Peak memory becomes O(block_size * N)
+        instead of O(N^2), which is what makes large N feasible at all.
+        Requires coordinates, not a precomputed distance matrix -- with D
+        in hand the full matrix already exists and there is nothing to
+        save.
+    block_size : int, optional
+        Rows per block in ``low_memory`` mode. Larger is slightly faster,
+        smaller uses less memory (peak tracks block_size * N * 8 bytes).
+        Defaults to roughly 400 MB per block.
 
     Returns
     -------
@@ -105,6 +119,20 @@ def tknndigraph(
         "max_neighbor_dist_prct": max_neighbor_dist_prct,
         "k": k,
     }
+
+    # -- low-memory path: never form the (N, N) distance matrix at all.
+    # Must branch before D is built, since building it is the thing being
+    # avoided.
+    if low_memory:
+        nr_lm, nc_lm = X_or_D.shape
+        if nr_lm == nc_lm and nr_lm > 1 and np.allclose(X_or_D, X_or_D.T):
+            raise ValueError(
+                "low_memory builds distances block by block, so it needs the "
+                "coordinates X (N, d), not a precomputed (N, N) distance "
+                "matrix -- with D in hand the full matrix already exists and "
+                "there is nothing left to save."
+            )
+        return _blocked_build(X_or_D, k, tidx, par, block_size)
 
     # -- check input and obtain distance matrix D
     nr, nc = X_or_D.shape
@@ -220,4 +248,140 @@ def tknndigraph(
     A_final = t_after_idx1 | A_space
 
     g = nx.from_numpy_array(A_final, create_using=nx.DiGraph)
+    return g, par
+
+
+def _blocked_build(X, k, tidx, par, block_size):
+    """tknndigraph's low-memory path: same graph, built a block of rows at
+    a time so no (N, N) array is ever allocated.
+
+    Every step except the percentile is row-local, so it blocks cleanly.
+    The percentile needs the global distance distribution, which is exactly
+    what blocking refuses to hold, so it is accumulated as a histogram
+    during the same pass.
+    """
+    X = np.asarray(X, dtype=float)
+    N = X.shape[0]
+    if k >= N:
+        raise ValueError(f"k must be smaller than the number of points ({N}).")
+    if np.isnan(X).any():
+        raise ValueError(
+            "X_or_D contains NaN values (or produces them once converted to a "
+            "distance matrix). Remove or impute missing data before calling "
+            "tknndigraph, e.g. via numpy or pandas dropna."
+        )
+
+    B = block_size
+    if B is None:
+        B = max(1, min(N, int(50e6 // max(N, 1))))  # ~400 MB of float64 per block
+    par["block_size"] = int(B)
+
+    tex = par["time_exclude_range"]
+    time_exclude_space = par["time_exclude_space"]
+    max_nd = par["max_neighbor_dist"]
+    prct = par["max_neighbor_dist_prct"]
+
+    # the temporal band, same construction as the dense path: pairs
+    # (i, i+n) for n = 1..tex wherever i has a temporal successor
+    t_wafter = np.roll(tidx, -1) - 1 == tidx
+    i_after = np.flatnonzero(t_wafter)
+    succ = i_after[i_after + 1 < N]
+    rows1 = succ
+    cols1 = succ + 1
+
+    is_after = np.zeros(N, dtype=bool)
+    is_after[i_after] = True
+
+    # Histogram range without an extra pass: the bounding-box diagonal is a
+    # hard upper bound on any pairwise Euclidean distance, and costs O(N*d).
+    need_prct = prct < 100.0
+    n_bins = 1_000_000
+    if need_prct:
+        hi = float(np.linalg.norm(X.max(axis=0) - X.min(axis=0)))
+        if not np.isfinite(hi) or hi <= 0:
+            hi = 1.0
+        edges = np.linspace(0.0, hi, n_bins + 1)
+        counts = np.zeros(n_bins, dtype=np.int64)
+
+    rows_all, cols_all, dist_all = [], [], []
+    for i0 in range(0, N, B):
+        i1 = min(i0 + B, N)
+        idx = np.arange(i0, i1)
+        Db = cdist(X[idx], X)  # (B, N) -- the only large array
+
+        Db[np.arange(idx.size), idx] = np.inf  # self-loops
+        if time_exclude_space:
+            for n in range(1, tex + 1):
+                r = idx[is_after[idx] & (idx + n < N)]
+                if r.size:
+                    Db[r - i0, r + n] = np.inf
+
+        if need_prct:
+            finite_vals = Db[np.isfinite(Db)]
+            if finite_vals.size:
+                counts += np.histogram(finite_vals, bins=edges)[0]
+
+        part = np.argpartition(Db, k - 1, axis=1)[:, :k]
+        dmax = np.take_along_axis(Db, part, axis=1).max(axis=1)[:, None]
+        keep = Db <= dmax  # the k nearest, plus any ties at the k-th distance
+        rr, cc = np.nonzero(keep)
+        rows_all.append(rr + i0)
+        cols_all.append(cc)
+        dist_all.append(Db[rr, cc])
+
+    # -- resolve the distance threshold. The percentile comes from the
+    # histogram above: exact to one bin width (range / 1e6), far below any
+    # scale that moves an edge.
+    if need_prct:
+        total = counts.sum()
+        target = prct / 100.0 * total
+        cum = np.cumsum(counts)
+        ib = int(np.searchsorted(cum, target))
+        ib = min(ib, n_bins - 1)
+        prct_dist = float(edges[ib + 1])  # upper edge: inclusive, matching D <= thr
+    else:
+        prct_dist = np.inf
+    resolved = min(prct_dist, max_nd)
+    par["max_neighbor_dist"] = resolved
+
+    rows = np.concatenate(rows_all) if rows_all else np.array([], dtype=int)
+    cols = np.concatenate(cols_all) if cols_all else np.array([], dtype=int)
+    dist = np.concatenate(dist_all) if dist_all else np.array([], dtype=float)
+    ok = dist <= resolved
+    A = sp.csr_matrix(
+        (np.ones(int(ok.sum()), dtype=bool), (rows[ok], cols[ok])),
+        shape=(N, N), dtype=bool,
+    )
+
+    if time_exclude_space:
+        band_r, band_c = [], []
+        for n in range(1, tex + 1):
+            r = i_after[i_after + n < N]
+            band_r.append(r)
+            band_c.append(r + n)
+        if band_r:
+            br = np.concatenate(band_r)
+            bc = np.concatenate(band_c)
+            band = sp.csr_matrix(
+                (np.ones(br.size, dtype=bool), (br, bc)), shape=(N, N), dtype=bool
+            )
+            # Subtract the band rather than A & ~band: the complement of
+            # a sparse matrix is DENSE, which would undo the point of
+            # blocking.
+            #   This is defensive rather than redundant. The blocked pass
+            # already set band distances to inf, so those pairs normally
+            # cannot be selected -- but if an entire row is inf (every
+            # candidate excluded), dmax is inf too and `Db <= dmax` picks
+            # them up again. Removing this line passes the test sweep,
+            # because that degenerate row does not arise there.
+            A = A > band
+    A_space = A.multiply(A.T) if par["reciprocal"] else (A + A.T)
+    A_space = A_space.astype(bool)
+
+    temporal = sp.csr_matrix(
+        (np.ones(rows1.size, dtype=bool), (rows1, cols1)), shape=(N, N), dtype=bool
+    )
+    A_final = (A_space + temporal).astype(bool)
+
+    g = nx.from_scipy_sparse_array(A_final, create_using=nx.DiGraph)
     return g, par

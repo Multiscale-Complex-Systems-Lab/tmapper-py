@@ -483,3 +483,99 @@ def test_tcm_distance_fast_path_matches_the_pairwise_loop():
     assert np.all(np.isnan(D_gap[2:6, 2:6])), (
         "uncovered time points should remain NaN, not 0."
     )
+
+
+def test_low_memory_reproduces_the_dense_graph():
+    """The blocked path never forms an (N, N) array, so it must be checked
+    against the dense one rather than trusted -- including at block sizes
+    that leave an awkward remainder, and with a gapped tidx, which is what
+    drives the temporal-band construction."""
+    for N in (60, 200):
+        for k in (2, 3):
+            for tex in (1, 5, 30):
+                for recip in (True, False):
+                    for tes in (True, False):
+                        if tex >= N:
+                            continue
+                        rng = np.random.RandomState(0)
+                        X = np.column_stack([
+                            np.sin(np.arange(N) / 12),
+                            np.cos(np.arange(N) / 12),
+                            np.cumsum(rng.randn(N)) / 20,
+                        ])
+                        kw = dict(
+                            time_exclude_range=tex, reciprocal=recip,
+                            time_exclude_space=tes,
+                        )
+                        g1, _ = tknndigraph(X, k, np.arange(N), **kw)
+                        g2, _ = tknndigraph(
+                            X, k, np.arange(N), low_memory=True, block_size=37, **kw
+                        )
+                        assert np.array_equal(
+                            nx.to_numpy_array(g1, nodelist=range(N)).astype(bool),
+                            nx.to_numpy_array(g2, nodelist=range(N)).astype(bool),
+                        ), f"low_memory differs at N={N}, k={k}, tex={tex}"
+
+    # block size is a memory dial only: it must not change the result, and a
+    # block larger than N (a single block) must work too
+    rng = np.random.RandomState(1)
+    N = 200
+    X = np.column_stack([
+        np.sin(np.arange(N) / 12),
+        np.cos(np.arange(N) / 12),
+    ])
+    tgap = np.concatenate([np.arange(100), np.arange(150, 250)])
+    ref, _ = tknndigraph(X, 3, tgap, time_exclude_range=5)
+    for bs in (1, 17, 199, 200, 1000):
+        gb, _ = tknndigraph(
+            X, 3, tgap, time_exclude_range=5, low_memory=True, block_size=bs
+        )
+        assert np.array_equal(
+            nx.to_numpy_array(ref, nodelist=range(N)).astype(bool),
+            nx.to_numpy_array(gb, nodelist=range(N)).astype(bool),
+        ), f"block_size={bs} changed the result; it should only trade memory for speed"
+
+
+def test_low_memory_percentile_matches_closely():
+    """The percentile needs the global distance distribution, which blocking
+    never holds, so it is accumulated as a histogram in the same pass. That
+    is exact to one bin width -- far below the scale that moves an edge, so
+    the graphs must still match."""
+    for prct in (95, 75, 50):
+        rng = np.random.RandomState(0)
+        N = 200
+        X = np.column_stack([
+            np.sin(np.arange(N) / 12),
+            np.cos(np.arange(N) / 12),
+            np.cumsum(rng.randn(N)) / 20,
+        ])
+        g1, p1 = tknndigraph(
+            X, 3, np.arange(N), time_exclude_range=5, max_neighbor_dist_prct=prct
+        )
+        g2, p2 = tknndigraph(
+            X, 3, np.arange(N), time_exclude_range=5, max_neighbor_dist_prct=prct,
+            low_memory=True, block_size=37,
+        )
+        rel = abs(p2["max_neighbor_dist"] - p1["max_neighbor_dist"]) / p1["max_neighbor_dist"]
+        assert rel < 1e-3, f"histogram percentile off by {rel:.2e} at prct={prct}"
+        assert np.array_equal(
+            nx.to_numpy_array(g1, nodelist=range(N)).astype(bool),
+            nx.to_numpy_array(g2, nodelist=range(N)).astype(bool),
+        ), f"low_memory should give the same graph under a percentile cutoff (prct={prct})"
+
+
+def test_low_memory_rejects_a_precomputed_distance_matrix():
+    """Handed D there is nothing left to save, so say so rather than
+    silently doing the dense thing."""
+    rng = np.random.RandomState(0)
+    N = 40
+    X = np.column_stack([np.sin(np.arange(N) / 6), np.cos(np.arange(N) / 6)])
+    D = np.linalg.norm(X[:, None, :] - X[None, :, :], axis=2)
+    with pytest.raises(ValueError, match="coordinates"):
+        tknndigraph(D, 3, np.arange(N), low_memory=True)
+
+    # and missing data must still be rejected on this path
+    Xnan = X.copy()
+    Xnan[5, 1] = np.nan
+    with pytest.raises(ValueError, match="NaN"):
+        tknndigraph(Xnan, 3, np.arange(N), low_memory=True)

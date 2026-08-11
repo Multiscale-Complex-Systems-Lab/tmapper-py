@@ -56,7 +56,11 @@ def filtergraph(g, d, *, reciprocal=True, compute_dsimp=True):
     Nn = len(nodelist)
     idx_of = {node: i for i, node in enumerate(nodelist)}
 
-    A = nx.to_numpy_array(g, nodelist=nodelist)  # weighted adjacency (weight 1 if unweighted)
+    # Sparse, not nx.to_numpy_array: these graphs come from a k-NN
+    # construction and carry a handful of edges per node, so the dense form
+    # is almost entirely zeros. At 16000 nodes that is 2.05 GB against
+    # 0.00004 GB sparse -- the single largest allocation in this function.
+    A = nx.to_scipy_sparse_array(g, nodelist=nodelist, format="csr")
 
     # -- connectivity within a distance threshold.
     # The geodesics are only ever compared against d, and for an UNWEIGHTED
@@ -66,8 +70,8 @@ def filtergraph(g, d, *, reciprocal=True, compute_dsimp=True):
     # expensive step here: ~5.9s of 7.8s at 8000 nodes).
     #   Weighted graphs need real shortest paths, and so does D_simp, so
     # those keep the dense route.
-    A_bool = A != 0
-    is_unweighted = bool(np.all(A[A_bool] == 1)) if A_bool.any() else True
+    A_bool = (A != 0)
+    is_unweighted = bool(np.all(A.data == 1)) if A.nnz else True
     # hop counts are integers, so D < d means D <= hmax:
     #   d integer    -> hmax = d-1       (D<3 admits 1 and 2 hops)
     #   d fractional -> hmax = floor(d)  (D<3.5 admits 1, 2 and 3)
@@ -76,7 +80,7 @@ def filtergraph(g, d, *, reciprocal=True, compute_dsimp=True):
 
     D = None
     if use_reach:
-        Ab = sp.csr_matrix(A_bool)
+        Ab = A_bool.tocsr()
         R = Ab.copy() if hmax >= 1 else sp.csr_matrix(Ab.shape, dtype=bool)
         P = Ab
         for _ in range(2, hmax + 1):
@@ -138,7 +142,7 @@ def filtergraph(g, d, *, reciprocal=True, compute_dsimp=True):
     S = sp.csr_matrix(
         (np.ones(Nn), (idx_newnodes, np.arange(Nn))), shape=(n_new, Nn)
     )
-    A_simp = np.asarray((S @ sp.csr_matrix(A) @ S.T).todense())
+    A_simp = np.asarray((S @ A @ S.T).todense())
     A_simp /= np.outer(group_sizes, group_sizes)
 
     # -- define distance between new nodes: shortest path between member
