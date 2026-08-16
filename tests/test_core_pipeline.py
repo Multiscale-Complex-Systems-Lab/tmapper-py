@@ -5,6 +5,8 @@ hand-derived, MATLAB-verified oracle values used there, translated from
 every node index). See that file's comments for the full derivations.
 """
 
+import importlib
+
 import numpy as np
 import pytest
 import networkx as nx
@@ -562,6 +564,110 @@ def test_low_memory_percentile_matches_closely():
             nx.to_numpy_array(g1, nodelist=range(N)).astype(bool),
             nx.to_numpy_array(g2, nodelist=range(N)).astype(bool),
         ), f"low_memory should give the same graph under a percentile cutoff (prct={prct})"
+
+
+def test_low_memory_histogram_survives_chunking():
+    """The percentile histogram is accumulated a chunk of rows at a time, to
+    keep the bin-index temporary bounded. Chunking is pure bookkeeping, so the
+    number of chunks must not change the answer -- but no test-sized input
+    comes near the 8M-value default, so force it small and check."""
+    # importlib, not `import tmapper.tknndigraph as tkm`: the package
+    # re-exports the FUNCTION under that name, which shadows the module.
+    tkm = importlib.import_module("tmapper.tknndigraph")
+
+    rng = np.random.RandomState(0)
+    N = 200
+    X = np.column_stack([
+        np.sin(np.arange(N) / 12),
+        np.cos(np.arange(N) / 12),
+        np.cumsum(rng.randn(N)) / 20,
+    ])
+    kw = dict(time_exclude_range=5, max_neighbor_dist_prct=90.0)
+
+    original = tkm._HIST_CHUNK
+    try:
+        # one chunk per block (the default's effective behaviour here)...
+        tkm._HIST_CHUNK = 10_000_000
+        g_one, p_one = tknndigraph(X, 3, np.arange(N), low_memory=True,
+                                   block_size=64, **kw)
+        # ...versus many chunks per block, several of them partial
+        tkm._HIST_CHUNK = 50
+        g_many, p_many = tknndigraph(X, 3, np.arange(N), low_memory=True,
+                                     block_size=64, **kw)
+    finally:
+        tkm._HIST_CHUNK = original
+
+    assert p_many["max_neighbor_dist"] == p_one["max_neighbor_dist"], (
+        "chunking changed the resolved cutoff: "
+        f"{p_many['max_neighbor_dist']!r} vs {p_one['max_neighbor_dist']!r}"
+    )
+    assert np.array_equal(
+        nx.to_numpy_array(g_one, nodelist=range(N)).astype(bool),
+        nx.to_numpy_array(g_many, nodelist=range(N)).astype(bool),
+    ), "chunking changed the graph"
+
+    # and both must still agree with the exact, unblocked percentile
+    g_dense, p_dense = tknndigraph(X, 3, np.arange(N), **kw)
+    rel = abs(p_many["max_neighbor_dist"] - p_dense["max_neighbor_dist"])
+    rel /= p_dense["max_neighbor_dist"]
+    assert rel < 1e-3, f"chunked histogram drifted from the exact percentile: {rel:.2e}"
+    assert np.array_equal(
+        nx.to_numpy_array(g_dense, nodelist=range(N)).astype(bool),
+        nx.to_numpy_array(g_many, nodelist=range(N)).astype(bool),
+    ), "chunked low_memory graph differs from the dense one"
+
+
+def test_low_memory_handles_a_pair_at_the_bounding_box_diagonal():
+    """The histogram's upper bound is the bounding-box diagonal, so a pair of
+    opposite corners sits exactly AT it -- and depending on how hi and the
+    scale factor round, dist * scale lands on bin index n_bins, one past the
+    last bin. np.bincount then returns an array one element longer than the
+    accumulator and the += raises. The clip is what prevents that.
+
+    Whether the rounding goes that way is fixture-specific (~22% of random
+    point sets in a quick scan), so the fixture below is picked to trip it
+    and asserts that it still does."""
+    tkm = importlib.import_module("tmapper.tknndigraph")
+
+    # Two opposite corners of the box, so the max distance equals the box
+    # diagonal exactly, plus interior points so there is a distribution to
+    # take a percentile of.
+    #   The corners go FIRST and LAST, not adjacent: neighbouring rows are
+    # temporal neighbours, and time_exclude_range would mask their distance
+    # to inf before the histogram ever saw it.
+    #   The 1.5 factor is not cosmetic. On the unit box the diagonal is
+    # sqrt(3), whose scale factor rounds down and keeps the top distance
+    # inside the last bin -- the clip never fires and the test passes even
+    # with it deleted.
+    rng = np.random.RandomState(0)
+    interior = rng.rand(48, 3) * 0.6 + 0.2
+    X = np.vstack([np.zeros(3), interior, np.ones(3)]) * 1.5
+    N = X.shape[0]
+
+    span = X.max(axis=0) - X.min(axis=0)
+    hi = float(np.linalg.norm(span))
+    dmax_actual = float(np.max(np.linalg.norm(X[:, None, :] - X[None, :, :], axis=2)))
+    assert dmax_actual == hi, (
+        "fixture is not exercising the top edge: the largest distance "
+        f"({dmax_actual!r}) should equal the bounding-box diagonal ({hi!r})"
+    )
+    assert int(dmax_actual * (tkm._HIST_BINS / hi)) >= tkm._HIST_BINS, (
+        "fixture no longer overflows the last bin, so it stopped testing the "
+        "clip -- rescale it until it does"
+    )
+
+    kw = dict(time_exclude_range=2, max_neighbor_dist_prct=80.0)
+    g_lm, p_lm = tknndigraph(X, 3, np.arange(N), low_memory=True,
+                             block_size=7, **kw)
+    g_d, p_d = tknndigraph(X, 3, np.arange(N), **kw)
+
+    rel = abs(p_lm["max_neighbor_dist"] - p_d["max_neighbor_dist"])
+    rel /= p_d["max_neighbor_dist"]
+    assert rel < 1e-3, f"cutoff off by {rel:.2e} with a pair at the top edge"
+    assert np.array_equal(
+        nx.to_numpy_array(g_d, nodelist=range(N)).astype(bool),
+        nx.to_numpy_array(g_lm, nodelist=range(N)).astype(bool),
+    ), "a pair at the bounding-box diagonal changed the low_memory graph"
 
 
 def test_low_memory_rejects_a_precomputed_distance_matrix():
