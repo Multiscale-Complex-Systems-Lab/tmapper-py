@@ -138,6 +138,59 @@ specifically to trip it, and asserts that it still does.
   The per-node `nodesize` vectors are element-wise identical (6,517 entries),
   so the two builds agree on the graph, not merely on its size.
 
+## Where Python now stands against MATLAB v2.2
+
+Same machine, same input, same parameters (`k=3, texclude=30, prct=95,
+maxdist=0.5, lowMemory`), N=56,835. The Python column is a run on **MATLAB's
+exact X**, loaded from `parity_X.mat`, so the two do identical work:
+
+| | MATLAB v2.2 | Python (before) | Python (now) |
+|---|---:|---:|---:|
+| `tknndigraph` | 102.2 s | 1667.1 s | **105.3 s** |
+| `filtergraph` | 1.7 s | 23.7 s | 26.1 s |
+| total | 103.9 s | 1690.8 s | **131.4 s** |
+| peak memory | 1.96 GB | 7.68 GB | 7.60 GB |
+| network | 6,049 nodes / 44,561 edges | — | **identical** |
+
+`tknndigraph` is now at parity (105.3 s vs 102.2 s, ~3%). **Two gaps remain,
+and they are now the dominant ones:** `filtergraph` is ~15× slower in Python
+(26.1 s vs 1.7 s), and peak memory is ~3.9× higher (7.60 GB vs 1.96 GB). The
+memory ceiling clearly does not live in `tknndigraph`, which is why removing
+the histogram's 400 MB temporary changed nothing.
+
+**MATLAB does not have the same bug.** Its `blockedBuild` makes the
+structurally identical call — `histcounts(finiteVals, edges)` with an explicit
+edges vector — but pays ~102 s where the same pattern cost Python ~1,600 s, so
+`histcounts` evidently special-cases uniformly-spaced edges where
+`np.histogram` does not. Checked by measurement rather than assumed, since
+assuming is what produced the Python version.
+
+## Parity: the ports agree bit-for-bit; the *preprocessing* does not
+
+The first MATLAB/Python full-scale pair produced different networks (6,049 vs
+6,517 nodes), which looked like a port defect. It is not:
+
+| input | result |
+|---|---|
+| MATLAB's X, n=1500 | identical (0 edges either way) |
+| MATLAB's X, n=5000 | identical (0 edges either way) |
+| MATLAB's X, N=56,835 (full) | identical: 916,608 edges → 6,049 nodes / 44,561 edges |
+| each side deriving its own X, n=1500 | 296 Python-only, 198 MATLAB-only |
+| each side deriving its own X, n=5000 | 1,286 Python-only, 1,066 MATLAB-only |
+
+MATLAB's `zscore` and pandas' `(x - mean) / std` differ by **~3e-13** —
+normally invisible. But `tmax`/`tmin` are whole degrees, so the state space is
+a discrete lattice carrying large numbers of *exactly equal* pairwise
+distances, and the `Db <= dmax` rule admits every tie at the k-th distance.
+Epsilon-level noise reorders those ties and flips ~6% of edges.
+
+`[UNRESOLVED]` — this is a property of the algorithm on quantized data, not a
+defect in either port, but it means the same analysis run in MATLAB and in
+Python will differ visibly on this dataset (and MATLAB would differ from itself
+if preprocessing changed in the last decimal place). How far the difference
+propagates into the final network's *structure* — as opposed to its node and
+edge counts — has not been investigated.
+
 ## What was measured and deliberately left alone
 
 - `argpartition` → `np.partition` (only the k-th smallest is used): measured
