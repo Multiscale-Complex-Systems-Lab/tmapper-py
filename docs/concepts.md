@@ -98,3 +98,12 @@ core pipeline (`tknndigraph` + `filtergraph`), this included a node-for-node,
 edge-for-edge comparison of the full output (`D_simp`, `A_simp`, node
 membership) on the real sample dataset, matching MATLAB exactly once the
 z-score convention above was accounted for.
+
+That last clause carries more weight than it looks. Handed **bit-identical**
+input, the two toolboxes produce bit-identical graphs at every size tested, up
+to all 56,835 points of the sample dataset. Letting each toolbox derive `X`
+itself — `zscore` on one side, `(x - mean) / std` on the other — changed about
+6% of edges, because the two differ in the last decimal place and the k-NN
+step admits every neighbour tied at the k-th distance. See
+[Performance & scaling](performance.md#comparing-results-against-the-matlab-toolbox)
+for the numbers and what to do about it.

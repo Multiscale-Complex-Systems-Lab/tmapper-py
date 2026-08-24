@@ -6,8 +6,8 @@
 `scratchpad/cmp_fg.py` + `cmp_fg_diff.py` (1,296-config old-vs-new sweep),
 `scratchpad/mut_equiv.py` (mutation / equivalent-mutant separation),
 `scratchpad/full_onmatx.py` (full-scale run on MATLAB's exact X).
-**Status:** `[PROPOSED]` — measurements recorded as taken; conclusion not yet
-reviewed by Mengsen.
+**Status:** `APPROVED` — reviewed and agreed by Mengsen, 2026-08-24. Items
+still marked `[UNRESOLVED]` below remain open and were approved *as* open.
 
 **Reliability note.** Wall times are single runs on a shared Windows machine,
 so ±20%. Equality claims (1,296 configurations, identical node/edge counts)

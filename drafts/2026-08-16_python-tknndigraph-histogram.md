@@ -6,8 +6,9 @@
 "How the numbers were produced"); full-scale A/B via
 `scratchpad/full_ab.py`, config grid via `scratchpad/cmp_lowmem.py`,
 mutation check via `scratchpad/mutate_hist.py`.
-**Status:** `[PROPOSED]` — measurements below are recorded as taken; the
-conclusion has not yet been reviewed by Mengsen.
+**Status:** `APPROVED` — reviewed and agreed by Mengsen, 2026-08-24. The
+conclusions here are findings, not proposals. Items still marked
+`[UNRESOLVED]` below remain open and were approved *as* open.
 
 **Reliability note.** Timings are single runs on one Windows machine with
 other processes present, so treat them as ±20% on wall time. The
