@@ -140,6 +140,12 @@ specifically to trip it, and asserts that it still does.
 
 ## Where Python now stands against MATLAB v2.2
 
+> **Superseded 2026-08-24** for the `filtergraph`, total and peak-memory
+> rows: `filtergraph` was subsequently rewritten to stay sparse, giving
+> 2.6 s and 1.33 GB. See
+> `2026-08-24_python-filtergraph-sparse.md`. The `tknndigraph` row and the
+> conclusion below it still hold.
+
 Same machine, same input, same parameters (`k=3, texclude=30, prct=95,
 maxdist=0.5, lowMemory`), N=56,835. The Python column is a run on **MATLAB's
 exact X**, loaded from `parity_X.mat`, so the two do identical work:

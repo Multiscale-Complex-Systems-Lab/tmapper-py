@@ -566,6 +566,51 @@ def test_low_memory_percentile_matches_closely():
         ), f"low_memory should give the same graph under a percentile cutoff (prct={prct})"
 
 
+def test_simplified_edge_weights_are_block_average_connectivity():
+    """g_simp's edge weight from node n to node m is the MEAN connectivity
+    between their member sets: the number of original edges running n -> m,
+    divided by |n| * |m|.
+
+    Nothing asserted this before. Deleting the normalisation outright, or
+    dividing by only the row group size, left all 122 tests passing while
+    changing 600 of 1,296 swept configurations -- so the weights were
+    entirely untested. The oracle below is computed straight from the
+    definition, independently of how filtergraph gets there."""
+    rng = np.random.RandomState(0)
+    N = 200
+    X = np.column_stack([
+        np.sin(np.arange(N) / 12),
+        np.cos(np.arange(N) / 12),
+        np.cumsum(rng.randn(N)) / 20,
+    ])
+    g, _ = tknndigraph(X, 3, np.arange(N), time_exclude_range=5)
+    g_simp, members, nodesize, _ = filtergraph(g, 3, compute_dsimp=False)
+
+    A = nx.to_numpy_array(g, nodelist=sorted(g.nodes()))
+    n_new = len(members)
+
+    # the test is only meaningful if some block is bigger than a single
+    # node -- otherwise |n| * |m| == 1 and the normalisation is invisible
+    assert max(len(m) for m in members) > 1, "fixture merges nothing"
+
+    checked = 0
+    for n in range(n_new):
+        for m in range(n_new):
+            if n == m:
+                continue  # self-loops are removed from g_simp
+            block = A[np.ix_(members[n], members[m])]
+            expected = block.sum() / (len(members[n]) * len(members[m]))
+            actual = g_simp[n][m]["weight"] if g_simp.has_edge(n, m) else 0.0
+            assert np.isclose(actual, expected), (
+                f"edge {n}->{m}: weight {actual!r}, expected block average "
+                f"{expected!r} (block sum {block.sum()!r} over "
+                f"{len(members[n])}x{len(members[m])} members)"
+            )
+            if expected:
+                checked += 1
+    assert checked > 0, "no non-zero edges were actually compared"
+
+
 def test_low_memory_histogram_survives_chunking():
     """The percentile histogram is accumulated a chunk of rows at a time, to
     keep the bin-index temporary bounded. Chunking is pure bookkeeping, so the

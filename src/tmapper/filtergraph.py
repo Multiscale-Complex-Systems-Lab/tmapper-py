@@ -3,6 +3,7 @@
 import numpy as np
 import networkx as nx
 import scipy.sparse as sp
+from scipy.sparse.csgraph import connected_components
 
 from ._shortest_path import all_pairs_distance
 
@@ -94,27 +95,34 @@ def filtergraph(g, d, *, reciprocal=True, compute_dsimp=True):
                 break
 
     if use_reach:
-        Rd = R.toarray()
-        A_ = (Rd & Rd.T) if reciprocal else (Rd | Rd.T)
+        # Stay sparse. R is overwhelmingly empty -- 0.086% dense on the
+        # 57k-node sample build -- so R.toarray() and the Rd & Rd.T that
+        # followed were 3.23 GB each, allocated to hold 2.8M True values.
+        A_sp = R.multiply(R.T) if reciprocal else (R + R.T)
+        A_sp = A_sp.tocsr().astype(bool)
+        A_sp.setdiag(False)  # remove self-loops
+        A_sp.eliminate_zeros()  # setdiag stores explicit False; drop them
     else:
         D = all_pairs_distance(g, nodelist)  # geodesic distance, inf if unreachable
         if reciprocal:
             A_ = (D < d) & (D.T < d)
         else:
             A_ = (D < d) | (D.T < d)
-    np.fill_diagonal(A_, False)  # remove self-loops
+        np.fill_diagonal(A_, False)  # remove self-loops
+        # D is dense on this route regardless, but the component search
+        # below still wants a sparse matrix rather than a networkx graph.
+        A_sp = sp.csr_matrix(A_)
 
-    # -- create graph out of nodes within said threshold, find connected components
-    g_ = nx.from_numpy_array(A_)
-    components = list(nx.connected_components(g_))
-    # sort components by their smallest member index, for deterministic/stable ordering
-    components = sorted(components, key=min)
-
-    idx_newnodes = np.empty(Nn, dtype=int)
-    for new_idx, comp in enumerate(components):
-        for i in comp:
-            idx_newnodes[i] = new_idx
-    n_new = len(components)
+    # -- create graph out of nodes within said threshold, find connected
+    # components. scipy directly, not nx.from_numpy_array + nx.connected
+    # _components: building the networkx graph meant walking all Nn^2 cells
+    # to construct Python objects, and was 57% of this function's runtime
+    # (12.85s of 22.64s at 57k nodes) to feed a search that takes 0.19s.
+    #   scipy labels components in order of smallest member index, which is
+    # what the sorted(components, key=min) here used to guarantee -- checked
+    # against the old route on 400 random graphs, 0 disagreed. That ordering
+    # is load-bearing: it fixes the numbering of every node in the output.
+    n_new, idx_newnodes = connected_components(A_sp, directed=False)
 
     # -- group original nodes by new-node label via a stable sort, so each
     # group is a contiguous run. This lets the block min/mean below use
@@ -142,8 +150,12 @@ def filtergraph(g, d, *, reciprocal=True, compute_dsimp=True):
     S = sp.csr_matrix(
         (np.ones(Nn), (idx_newnodes, np.arange(Nn))), shape=(n_new, Nn)
     )
-    A_simp = np.asarray((S @ A @ S.T).todense())
-    A_simp /= np.outer(group_sizes, group_sizes)
+    # Kept sparse through the division too: the product has one entry per
+    # edge of the output network (~44k), while the dense form is n_new^2 and
+    # then has to be re-scanned by from_numpy_array to build g_simp.
+    A_simp = (S @ A @ S.T).tocoo()
+    denom = group_sizes.astype(float)[A_simp.row] * group_sizes.astype(float)[A_simp.col]
+    A_simp.data = A_simp.data / denom
 
     # -- define distance between new nodes: shortest path between member
     # sets. Block-min has no matrix-product equivalent, so it keeps the
@@ -157,7 +169,9 @@ def filtergraph(g, d, *, reciprocal=True, compute_dsimp=True):
     else:
         D_simp = None
 
-    g_simp = nx.from_numpy_array(A_simp, create_using=nx.DiGraph)
+    g_simp = nx.from_scipy_sparse_array(
+        A_simp.tocsr(), create_using=nx.DiGraph
+    )
     g_simp.remove_edges_from(nx.selfloop_edges(g_simp))  # OmitSelfLoops
 
     return g_simp, members, nodesize, D_simp
