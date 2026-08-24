@@ -89,6 +89,15 @@ plugins:
             show_signature_annotations: true
 
 # --- Navigation (left sidebar) ----------------------------------------------
+# Draft analysis notes live in ../drafts/, deliberately OUTSIDE docs_dir so
+# they are never built or published: they hold provisional conclusions that
+# have not been reviewed, and anything under docs/ ends up reachable on the
+# site (and in its search index and sitemap). This guard makes the intent
+# explicit and keeps a drafts/ directory from being published if one is ever
+# recreated under docs/ by mistake.
+exclude_docs: |
+  drafts/
+
 nav:
   - Home: index.md
   - Installation: installation.md
