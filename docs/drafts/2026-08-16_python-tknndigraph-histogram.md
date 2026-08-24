@@ -179,17 +179,43 @@ The first MATLAB/Python full-scale pair produced different networks (6,049 vs
 | each side deriving its own X, n=5000 | 1,286 Python-only, 1,066 MATLAB-only |
 
 MATLAB's `zscore` and pandas' `(x - mean) / std` differ by **~3e-13** —
-normally invisible. But `tmax`/`tmin` are whole degrees, so the state space is
-a discrete lattice carrying large numbers of *exactly equal* pairwise
-distances, and the `Db <= dmax` rule admits every tie at the k-th distance.
-Epsilon-level noise reorders those ties and flips ~6% of edges.
+normally invisible. It matters here because the data carries large numbers of
+*exactly equal* pairwise distances, and the `Db <= dmax` rule admits every tie
+at the k-th distance.
 
-`[UNRESOLVED]` — this is a property of the algorithm on quantized data, not a
-defect in either port, but it means the same analysis run in MATLAB and in
-Python will differ visibly on this dataset (and MATLAB would differ from itself
-if preprocessing changed in the last decimal place). How far the difference
-propagates into the final network's *structure* — as opposed to its node and
-edge counts — has not been investigated.
+Tie density, measured on this dataset:
+
+| | |
+|---|---:|
+| distinct `(tmax, tmin)` | 4,122 |
+| distinct `(tmax, tmin, prcp)` | 20,173 |
+| exact duplicate rows | 36,662 of 56,835 (65%) |
+| rows whose k-th distance is exactly tied (k=3, n=5,000) | 3,401 (68%) |
+| mean neighbours admitted per row | 2.94 (max 18) |
+
+`prcp` genuinely adds resolution — it more than quadruples the distinct states
+— but it does not break the ties, being itself quantized (268 distinct values)
+and zero on 37,168 of 56,835 days.
+
+**~~Struck 2026-08-24: an earlier version of this section called the pipeline
+"ill-conditioned on quantized data" and marked the behaviour `[UNRESOLVED]`.
+That was wrong, and inverted the point.~~** Admitting every tie is deliberate:
+when distances are exactly equal, selecting exactly k of them would be
+arbitrary, so `Db <= dmax` takes all of them and the result is *deterministic*.
+Ties are pervasive here, so that rule is load-bearing rather than incidental.
+
+The correct reading of the 6% divergence: a perturbed input has **no exact ties
+at all**, so "admit every tied neighbour" silently degrades into "admit an
+arbitrary k". The float noise does not expose fragility in the tie rule — it
+destroys the exact arithmetic the rule depends on. That argues *for* the
+design, and against letting preprocessing introduce last-decimal noise.
+
+Practical consequence, and the part still worth care: matching results across
+the two toolboxes requires preprocessing matched *exactly*, not merely
+equivalently. `zscore` and `(x - mean) / std` are algebraically identical and
+differ in the last decimal, which is enough. Whether the divergence changes the
+final network's *structure* — as opposed to its node and edge counts — has not
+been investigated.
 
 ## What was measured and deliberately left alone
 
