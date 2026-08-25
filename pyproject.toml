@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 # from the existing "mapper" package (a similarly-themed topological data
 # analysis tool), which is exactly the pattern that check exists to catch.
 name = "tmapper-py"
-version = "0.1.0"
+version = "0.2.0"
 description = "Python port of Temporal Mapper 2 -- build attractor transition networks from time-series data"
 readme = "README.md"
 requires-python = ">=3.10"
