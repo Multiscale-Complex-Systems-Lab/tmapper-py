@@ -870,7 +870,16 @@ def test_generated_code_emits_low_memory_and_rebuilds_the_network(
         n_points=len(built["rows"]),
     )
 
-    assert "low_memory=True" in code
+    # -- on the call line specifically, not merely somewhere in the file.
+    # Running the script is not enough to catch a missing flag: tknndigraph
+    # takes coordinates *or* a distance matrix, and given the former without
+    # low_memory it just calls cdist internally -- same graph, same N^2
+    # allocation the flag exists to avoid. The generated comment also
+    # contains the string, so a substring check over the whole script passes
+    # while the call has lost it.
+    call = [ln for ln in code.splitlines() if ln.startswith("g, par = tknndigraph(")]
+    assert len(call) == 1, f"expected exactly one tknndigraph call, got {call}"
+    assert "low_memory=True" in call[0], call[0]
     assert "cdist" not in code, \
         "the point of low_memory is that the dense matrix is never built -- nor imported."
 
