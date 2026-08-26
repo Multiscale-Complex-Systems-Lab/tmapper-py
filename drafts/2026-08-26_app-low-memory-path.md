@@ -1,6 +1,6 @@
 # The Streamlit app on the low-memory path
 
-**Status: DRAFT — AWAITING REVIEW (2026-08-26, proposed by Claude, not yet agreed)**
+**Status: APPROVED — reviewed and agreed by Mengsen, 2026-08-26**
 
 Produced by: `scratchpad/measure_one.py` (one measurement per process),
 run on 2026-08-26 against `tmapper-py` at branch `app-low-memory`
@@ -68,7 +68,7 @@ maxdist=0.5, reciprocal=True, downsample=1`.
 
 Larger blocked-only runs, same setup: **32 000 → 10.29 s**, **57 000 → 31.82 s**.
 
-**Proposed conclusion.** The blocked builder dominates the dense one on both
+**Conclusion** (agreed 2026-08-26). The blocked builder dominates the dense one on both
 axes at every size measured — 1.1× faster at N=500 (within noise), rising to
 ~4× from N=8000 on, with 2–7× less peak memory. Graphs are identical. There
 is no size at which the dense path is the better choice, so the app should
