@@ -763,6 +763,123 @@ def test_invalid_range_and_embedding_are_rejected(app, sample_df):
         )
 
 
+
+# ================================================ low-memory (blocked) path
+#
+# The app used to build every network from a dense cdist matrix, which
+# capped it at ~8000 rows regardless of what the library could do. It now
+# switches to tknndigraph's low_memory path above LOW_MEMORY_ROWS. These
+# tests pin the two things that switch must not break: the graph is the
+# same one, and the generated code reproduces the path actually taken.
+
+
+def _build_at(app, df, *, threshold, monkeypatch, **over):
+    """build_network on a fixed parameter set, with LOW_MEMORY_ROWS forced.
+
+    build_network is wrapped in st.cache_data, whose key is the *arguments*
+    -- a monkeypatched module constant is invisible to it, so without the
+    explicit clear() the second call here would return the first call's
+    cached result and the comparison would be vacuous.
+    """
+    monkeypatch.setattr(app, "LOW_MEMORY_ROWS", threshold)
+    app.build_network.clear()
+    kw = dict(selected_vars=("tmax", "tmin", "prcp"), zscore_on=True,
+              start_row=0, end_row=999, downsample=1, lag=0, order=1,
+              k=3, d=3.0, texclude=30, maxdistprct=100.0, maxdist=0.5,
+              reciprocal=True)
+    kw.update(over)
+    return app.build_network(df, **kw)
+
+
+def test_low_memory_path_builds_the_same_graph_as_the_dense_one(app, sample_df, monkeypatch):
+    """Switching to the blocked builder must be invisible in the result.
+
+    tknndigraph's two paths were verified equal across 540 configurations
+    when the blocked path landed; this asserts the *app* hands them
+    equivalent inputs, which is the part that change could get wrong (X vs
+    D, tidx alignment, the parameters that ride along).
+    """
+    dense = _build_at(app, sample_df, threshold=10_000, monkeypatch=monkeypatch)
+    blocked = _build_at(app, sample_df, threshold=100, monkeypatch=monkeypatch)
+
+    assert "block_size" not in dense["par"], \
+        "a 1000-row window is under the 10000 threshold, so it must take the dense path."
+    assert "block_size" in blocked["par"], \
+        "above the threshold the blocked builder must actually be the one that ran."
+
+    dg, bg = dense["g_simp"], blocked["g_simp"]
+    assert dg.number_of_nodes() == bg.number_of_nodes()
+    assert dg.number_of_edges() == bg.number_of_edges()
+    assert nx.utils.graphs_equal(dg, bg), \
+        "the blocked path must reproduce the dense graph exactly, weights included."
+    assert [sorted(m) for m in dense["members"]] == [sorted(m) for m in blocked["members"]]
+    np.testing.assert_array_equal(dense["tidx"], blocked["tidx"])
+    np.testing.assert_array_equal(dense["rows"], blocked["rows"])
+
+
+def test_low_memory_path_agrees_with_the_dense_one_under_a_percentile_cutoff(
+    app, sample_df, monkeypatch
+):
+    """max_neighbor_dist_prct < 100 is the case where the two paths compute
+    the cutoff by genuinely different means -- the dense path percentiles
+    the whole matrix, the blocked one accumulates a histogram as it goes.
+    The default prct=100 skips that code entirely, so testing only the
+    default would leave the interesting half uncovered.
+    """
+    dense = _build_at(app, sample_df, threshold=10_000, monkeypatch=monkeypatch,
+                      maxdistprct=95.0)
+    blocked = _build_at(app, sample_df, threshold=100, monkeypatch=monkeypatch,
+                        maxdistprct=95.0)
+
+    assert dense["par"]["max_neighbor_dist"] == pytest.approx(
+        blocked["par"]["max_neighbor_dist"], rel=1e-6
+    ), "the resolved distance cutoff must agree between the two paths."
+    assert nx.utils.graphs_equal(dense["g_simp"], blocked["g_simp"])
+
+
+def test_generated_code_emits_the_path_that_was_actually_used(
+    app, sample_df, monkeypatch, tmp_path
+):
+    """The code panel is a reproduction recipe. If the app built via
+    low_memory and the script emits a dense cdist, the script either
+    exhausts memory at the size that motivated the switch or -- worse --
+    quietly succeeds at a smaller size, so nobody notices it does not
+    describe the run it came from.
+    """
+    common = dict(selected_vars=("tmax", "tmin", "prcp"), zscore_on=True,
+                  start_row=0, end_row=999, downsample=1, lag=0, order=1,
+                  k=3, d=3.0, texclude=30, maxdistprct=100.0, maxdist=0.5,
+                  reciprocal=True)
+
+    def code_for(threshold):
+        monkeypatch.setattr(app, "LOW_MEMORY_ROWS", threshold)
+        return app.generate_code(
+            "pass  # dat is supplied by the test", common["selected_vars"], True,
+            0, 999, 1, 0, 1, 3, 3.0, 30, 100.0, 0.5, True,
+            "tmax", "(row index)", "log", "mode", True, None, "viridis", "numeric",
+        )
+
+    dense_code = code_for(10_000)
+    assert "cdist(X, X" in dense_code
+    assert "low_memory" not in dense_code, \
+        "a dense build must not advertise a flag it did not use."
+
+    blocked_code = code_for(100)
+    assert "low_memory=True" in blocked_code
+    assert "cdist(X, X" not in blocked_code, \
+        "the whole point of low_memory is that the dense matrix is never built."
+
+    # and it must run, producing the same network the app did
+    monkeypatch.setattr(app, "LOW_MEMORY_ROWS", 100)
+    app.build_network.clear()
+    built = app.build_network(sample_df, **common)
+    monkeypatch.chdir(tmp_path)
+    ns = {"dat": sample_df}
+    exec(compile(blocked_code, "<generated>", "exec"), ns)  # noqa: S102
+    assert nx.utils.graphs_equal(ns["g_simp"], built["g_simp"]), \
+        "the emitted script must rebuild the very network it describes."
+
+
 # --------------------------------------------------- UI guards & sentinels
 
 def test_memory_guard_blocks_an_oversized_row_range(app):
