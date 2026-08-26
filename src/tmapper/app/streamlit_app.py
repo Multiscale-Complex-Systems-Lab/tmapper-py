@@ -28,7 +28,6 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
-from scipy.spatial.distance import cdist
 from scipy.stats import zscore as scipy_zscore
 
 from tmapper import (
@@ -100,9 +99,11 @@ You don't need to clean the file first:
 - Sampling is assumed **evenly spaced**. If it isn't, or the recording has real
   breaks in it, set a **time index** column under Variables & Preprocessing.
 
-Every pair of time points is compared, so memory grows with the *square* of the
-number of rows — long recordings need a row range or downsampling. The app
-refuses a selection that would be too large and tells you the figure.
+Every pair of time points is compared, so build *time* grows with the square of
+the number of rows. Memory does not: the graph is built a block of rows at a
+time, so a long recording is slow rather than impossible. The app warns with a
+rough estimate above a few thousand points and builds it anyway; a row range or
+downsampling is how you cut the wait.
 """
 
 
@@ -320,29 +321,42 @@ def show_figure(fig, width_px=FIGURE_WIDTH_PX):
             st.pyplot(fig, use_container_width=False)
 
 
-# ==================================================== pre-flight size guard
+# ================================================== pre-flight size warning
 
-MAX_WINDOW_ROWS = 8000  # cdist's pairwise distance matrix is O(N^2) in memory
+# Point count past which a build is slow enough to be worth warning about.
+# Not a limit: the app will still build it. Set where the measured runtime
+# crosses a couple of seconds (see SECONDS_PER_PAIR).
+SLOW_WINDOW_ROWS = 16000
+
+# Rough seconds per N^2, for the "this will take a while" estimate. Measured
+# on the bundled sample (k=3, texclude=30, prct=100) across N = 8k/16k/32k/57k,
+# which gave 1.008/1.002/1.005/0.979 x 1e-8 -- flat enough to treat as a
+# constant, and the quadratic scaling it assumes is inherent (every pair of
+# points is compared). Machine-dependent, so the message says "roughly".
+SECONDS_PER_PAIR = 1.0e-8
 
 
-def oversized_window_message(window_rows, downsample):
-    """Error text if a full pairwise distance matrix for this row range
-    would be unreasonably large, else None.
+def slow_window_message(window_rows, downsample):
+    """Warning text if this row range will take a noticeable time to build,
+    else None. Advisory only -- the build proceeds either way.
 
-    cdist allocates window_rows^2 float64s, so an untrimmed real dataset
-    can ask for tens of GB -- the bundled sample's full 57709 rows would
-    need ~25 GB. Better to refuse with a number the user can act on than
-    to let numpy raise (or the machine swap). Only applies when
-    downsample == 1, since downsampling is itself the fix.
+    Runtime is quadratic in the point count because tknndigraph compares
+    every pair. Memory is not the constraint it once was: the app builds
+    via the low_memory path, whose peak tracks block_size * N rather than
+    N^2, so what used to be a hard refusal at 8000 rows is now just a
+    heads-up about the wait.
     """
-    if window_rows > MAX_WINDOW_ROWS and downsample == 1:
-        return (
-            f"The selected row range has {window_rows} rows -- computing a full "
-            f"pairwise distance matrix at this size needs "
-            f"~{8 * window_rows ** 2 / 1e9:.1f} GB of memory. Restrict the row range "
-            f"(start row/end row) or set downsample (N) > 1 first."
-        )
-    return None
+    points = window_rows // max(downsample, 1)
+    if points <= SLOW_WINDOW_ROWS:
+        return None
+    secs = SECONDS_PER_PAIR * points ** 2
+    est = f"{secs:.0f} seconds" if secs < 90 else f"{secs / 60:.0f} minutes"
+    return (
+        f"The selected range works out to {points} points. Every pair is "
+        f"compared, so build time grows with the square of that -- expect "
+        f"roughly {est}. Narrow the row range (start row/end row) or raise "
+        f"downsample (N) to cut it down."
+    )
 
 
 # ========================================================= expensive: build
@@ -494,13 +508,24 @@ def build_network(
                 "same index. Reduce downsample (N)."
             )
 
-    D = cdist(X, X, metric="euclidean")
+    # -- always the blocked builder, never a precomputed cdist matrix. It
+    # scans the coordinates a block of rows at a time, so peak memory tracks
+    # block_size * N instead of N^2, and it produces the identical graph (the
+    # two paths were verified equal across 540 parameter configurations).
+    #
+    # There is deliberately no size threshold here. Blocking was expected to
+    # cost speed on small windows and pay off only on large ones; measured on
+    # the bundled sample it is faster at *every* size tried -- 1.1x at 500
+    # points, ~4x from 8000 up (0.65 s vs 2.80 s at 8000, 2.56 s vs 10.59 s
+    # at 16000) -- while also using less memory. Splitting on size would add a
+    # branch that is never the better choice.
     g, par = tknndigraph(
-        D, k, tidx,
+        X, k, tidx,
         time_exclude_range=texclude,
         max_neighbor_dist_prct=maxdistprct,
         max_neighbor_dist=maxdist,
         reciprocal=reciprocal,
+        low_memory=True,
     )
     # compute_dsimp=False: D_simp is the most expensive step in filtergraph
     # and this app discards it, as the underscore made plain.
@@ -738,17 +763,21 @@ def _coderepr(x):
 def generate_code(source_code, selected_vars, zscore_on, start_row, end_row, downsample,
                    lag, order, k, d, texclude, maxdistprct, maxdist, reciprocal,
                    color_var, time_var, nodesizemode, labelmethod, show_recurrence,
-                   tidx_var=None, cmap="jet", color_kind="numeric"):
+                   tidx_var=None, cmap="jet", color_kind="numeric", n_points=None):
     end_row_repr = "None" if end_row is None else repr(end_row)
     color_is_datetime = color_kind == "datetime"
     color_is_category = color_kind == "category"
+
+    # `n_points` is what the app actually built on, used only to size the
+    # note about the matrix low_memory avoids. Optional: callers that have
+    # just the widget values pass nothing and the note is left out.
+    dense_gb = None if n_points is None else 8 * n_points ** 2 / 1e9
 
     lines = [
         "# Temporal Mapper -- generated by the Streamlit app's code view",
         "import numpy as np",
         "import pandas as pd",
         *(["import matplotlib.dates as mdates"] if color_is_datetime else []),
-        "from scipy.spatial.distance import cdist",
         "from scipy.stats import zscore",
         "from tmapper import tknndigraph, filtergraph, plot_tmgraph_interactive, tcm_distance",
         "",
@@ -802,12 +831,19 @@ def generate_code(source_code, selected_vars, zscore_on, start_row, end_row, dow
         ]
     else:
         lines += ["tidx = (rows - rows[0]) // downsample"]
+    tail = (f"{k!r}, tidx, time_exclude_range={texclude!r}, "
+            f"max_neighbor_dist_prct={_coderepr(maxdistprct)}, "
+            f"max_neighbor_dist={_coderepr(maxdist)}, reciprocal={reciprocal!r}")
     lines += [
         "",
-        "D = cdist(X, X, metric='euclidean')",
-        f"g, par = tknndigraph(D, {k!r}, tidx, time_exclude_range={texclude!r}, "
-        f"max_neighbor_dist_prct={_coderepr(maxdistprct)}, max_neighbor_dist={_coderepr(maxdist)}, "
-        f"reciprocal={reciprocal!r})",
+        "# low_memory=True: build from the coordinates a block of rows at a time,",
+        "# so the full pairwise distance matrix is never allocated. Same graph as",
+        "# passing a precomputed one, and measurably faster at every size tested.",
+        *([f"# At {n_points} points that matrix alone would have needed "
+           f"~{dense_gb:.2f} GB."] if dense_gb is not None else []),
+        f"g, par = tknndigraph(X, {tail}, low_memory=True)",
+    ]
+    lines += [
         f"g_simp, members, nodesize, D_simp = filtergraph(g, {d!r}, reciprocal={reciprocal!r})",
         "",
     ]
@@ -890,10 +926,12 @@ def main():
 
         if action == "sample":
             # the bundled CSV is the *full* historical daily record (57709
-            # rows) -- same recent-slice trim as this project's Quickstart/
-            # tmapper_demo.m (dat.iloc[53883:]), since the untrimmed file
-            # is unusable as-is: cdist's pairwise distance matrix is O(N^2)
-            # in memory (57709 rows would need ~25 GiB).
+            # rows); this takes the same recent slice as the project's
+            # Quickstart and tmapper_demo.m (dat.iloc[53883:]) so the two
+            # agree. The trim is no longer a memory necessity -- the whole
+            # file builds on the low_memory path -- but it keeps the default
+            # click fast (measured ~0.2 s against ~32 s for all 57709), and
+            # the row range widgets are there for anyone who wants the rest.
             sample_df, dropped_col = read_csv_smart(SAMPLE_DATA_PATH)
             sample_df = sample_df.iloc[53883:].reset_index(drop=True)
             src = ["from tmapper import sample_data_path",
@@ -1096,12 +1134,15 @@ def main():
     if build_clicked:
         resolved_end = (len(df) - 1) if end_row is None else min(end_row, len(df) - 1)
         window_rows = resolved_end - start_row + 1
-        oversized = oversized_window_message(window_rows, downsample)
+        slow = slow_window_message(window_rows, downsample)
         if not selected_vars:
             st.error("Select at least one variable to build the network from.")
-        elif oversized:
-            st.error(oversized)
         else:
+            # advisory, not a gate: the build runs regardless. Shown before
+            # the spinner so the estimate is on screen during the wait it
+            # is describing, not after it.
+            if slow:
+                st.warning(slow)
             with st.spinner("Building network..."):
                 try:
                     built = build_network(
@@ -1142,7 +1183,7 @@ def main():
             st.session_state["data_source_code"], selected_vars, zscore_on, start_row, end_row,
             downsample, lag, order, k, d, texclude, maxdistprct, maxdist, reciprocal,
             color_var, time_var, nodesizemode, labelmethod, show_recurrence, tidx_var, cmap,
-            color_kind,
+            color_kind, n_points=len(built["rows"]),
         )
 
         with st.expander("Export / share"):

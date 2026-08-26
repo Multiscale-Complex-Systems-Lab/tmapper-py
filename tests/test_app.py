@@ -24,7 +24,9 @@ import pytest
 pytest.importorskip("streamlit")
 from streamlit.testing.v1 import AppTest
 
-from tmapper import sample_data_path
+from scipy.spatial.distance import cdist
+
+from tmapper import filtergraph, sample_data_path, tknndigraph
 
 APP_PATH = str(
     Path(__file__).resolve().parent.parent
@@ -763,25 +765,163 @@ def test_invalid_range_and_embedding_are_rejected(app, sample_df):
         )
 
 
+
+# ================================================ low-memory (blocked) path
+#
+# The app used to build every network from a dense cdist matrix, which
+# capped it at ~8000 rows regardless of what the library could do. It now
+# always uses tknndigraph's low_memory path -- measured faster and smaller
+# at every size tried, so there is no threshold to get wrong. These tests
+# pin that it really is the path taken, that it agrees with an independent
+# dense reference, and that the code panel reproduces the run.
+
+
+def _spy_on_tknndigraph(app, monkeypatch):
+    """Capture the arguments the app hands tknndigraph, then delegate.
+
+    Lets a test check *how* the graph was built and rebuild the same input
+    a different way, without build_network having to expose X for the
+    benefit of its tests.
+    """
+    seen = {}
+    real = app.tknndigraph
+
+    def spy(first, k, tidx, **kw):
+        seen.update(X=np.asarray(first), k=k, tidx=np.asarray(tidx), kw=kw)
+        return real(first, k, tidx, **kw)
+
+    monkeypatch.setattr(app, "tknndigraph", spy)
+    return seen
+
+
+def _build_net(app, df, **over):
+    app.build_network.clear()  # st.cache_data keys on args, not module state
+    kw = dict(selected_vars=("tmax", "tmin", "prcp"), zscore_on=True,
+              start_row=0, end_row=999, downsample=1, lag=0, order=1,
+              k=3, d=3.0, texclude=30, maxdistprct=100.0, maxdist=0.5,
+              reciprocal=True)
+    kw.update(over)
+    return app.build_network(df, **kw)
+
+
+@pytest.mark.parametrize("end_row", [199, 999, 2999])
+def test_app_always_builds_on_the_low_memory_path(app, sample_df, monkeypatch, end_row):
+    """No size threshold: blocking measured faster and smaller at every size
+    tried, so a build that quietly falls back to a dense matrix at some size
+    is a regression, not an optimisation. Sizes span the old 8000-row limit's
+    neighbourhood in miniature."""
+    seen = _spy_on_tknndigraph(app, monkeypatch)
+    built = _build_net(app, sample_df, end_row=end_row)
+
+    assert seen["kw"].get("low_memory") is True, \
+        "the app must ask for the blocked builder explicitly."
+    assert seen["X"].ndim == 2 and seen["X"].shape[0] == len(built["rows"]), \
+        "low_memory needs coordinates; a square distance matrix means the old path ran."
+    assert "block_size" in built["par"], \
+        "par must record that the blocked builder is what actually ran."
+
+
+@pytest.mark.parametrize("maxdistprct", [100.0, 95.0])
+def test_low_memory_build_matches_an_independent_dense_reference(
+    app, sample_df, monkeypatch, maxdistprct
+):
+    """Rebuild the app's own input the other way and demand the same graph.
+
+    The reference is computed here from cdist rather than by re-running the
+    app with a flag flipped, so it is a genuine oracle: a bug that changed
+    both paths together would still be caught.
+
+    prct=95 is parametrised because it is the only case where the two paths
+    resolve the distance cutoff by different means -- the dense path takes a
+    percentile of the whole matrix, the blocked one accumulates a histogram
+    as it scans. At the default prct=100 that code never runs.
+    """
+    seen = _spy_on_tknndigraph(app, monkeypatch)
+    built = _build_net(app, sample_df, maxdistprct=maxdistprct)
+
+    D = cdist(seen["X"], seen["X"], metric="euclidean")
+    kw = dict(seen["kw"])
+    kw.pop("low_memory")
+    g_ref, par_ref = tknndigraph(D, seen["k"], seen["tidx"], **kw)
+    g_simp_ref, members_ref, _, _ = filtergraph(
+        g_ref, 3.0, reciprocal=True, compute_dsimp=False)
+
+    assert par_ref["max_neighbor_dist"] == pytest.approx(
+        built["par"]["max_neighbor_dist"], rel=1e-6
+    ), "the resolved distance cutoff must agree with the dense computation."
+    assert nx.utils.graphs_equal(built["g_simp"], g_simp_ref), \
+        "the blocked build must equal the dense one exactly, weights included."
+    assert [sorted(m) for m in built["members"]] == [sorted(m) for m in members_ref]
+
+
+def test_generated_code_emits_low_memory_and_rebuilds_the_network(
+    app, sample_df, monkeypatch, tmp_path
+):
+    """The code panel is a reproduction recipe. Emitting a dense cdist while
+    the app built via low_memory would hand the user a script that exhausts
+    memory at the size that motivated the switch -- or, worse, quietly
+    succeeds at a smaller one so nobody notices it misdescribes its own run.
+    """
+    built = _build_net(app, sample_df)
+    code = app.generate_code(
+        "pass  # dat is supplied by the test", ("tmax", "tmin", "prcp"), True,
+        0, 999, 1, 0, 1, 3, 3.0, 30, 100.0, 0.5, True,
+        "tmax", "(row index)", "log", "mode", True, None, "viridis", "numeric",
+        n_points=len(built["rows"]),
+    )
+
+    # -- on the call line specifically, not merely somewhere in the file.
+    # Running the script is not enough to catch a missing flag: tknndigraph
+    # takes coordinates *or* a distance matrix, and given the former without
+    # low_memory it just calls cdist internally -- same graph, same N^2
+    # allocation the flag exists to avoid. The generated comment also
+    # contains the string, so a substring check over the whole script passes
+    # while the call has lost it.
+    call = [ln for ln in code.splitlines() if ln.startswith("g, par = tknndigraph(")]
+    assert len(call) == 1, f"expected exactly one tknndigraph call, got {call}"
+    assert "low_memory=True" in call[0], call[0]
+    assert "cdist" not in code, \
+        "the point of low_memory is that the dense matrix is never built -- nor imported."
+
+    monkeypatch.chdir(tmp_path)
+    ns = {"dat": sample_df}
+    exec(compile(code, "<generated>", "exec"), ns)  # noqa: S102
+    assert nx.utils.graphs_equal(ns["g_simp"], built["g_simp"]), \
+        "the emitted script must rebuild the very network it describes."
+
+
 # --------------------------------------------------- UI guards & sentinels
 
-def test_memory_guard_blocks_an_oversized_row_range(app):
-    """The untrimmed sample (57709 rows) would need a ~25 GB distance
-    matrix; the guard must refuse with an actionable number rather than
-    letting cdist attempt the allocation."""
-    # under the limit, or downsampled -> allowed
-    assert app.oversized_window_message(3826, 1) is None
-    assert app.oversized_window_message(app.MAX_WINDOW_ROWS, 1) is None
-    assert app.oversized_window_message(57709, 4) is None, \
-        "downsampling is the fix, so the guard must not fire when it's on."
+def test_slow_window_warning_advises_without_blocking(app):
+    """The old guard *refused* anything over 8000 rows, because cdist would
+    have allocated an N^2 matrix. On the low_memory path memory is no longer
+    the constraint -- runtime is -- so this warns and lets the build run.
+    """
+    # comfortably fast -> silent
+    assert app.slow_window_message(3826, 1) is None
+    assert app.slow_window_message(app.SLOW_WINDOW_ROWS, 1) is None
+    assert app.slow_window_message(57709, 8) is None, \
+        "downsampling cuts the point count, so the warning must follow it down."
 
-    msg = app.oversized_window_message(57709, 1)
+    msg = app.slow_window_message(57709, 1)
     assert msg is not None
-    assert "57709 rows" in msg
-    assert "GB of memory" in msg
-    # 57709^2 * 8 bytes ~= 26.6 GB -- the figure must be real, not a guess
-    assert "26.6 GB" in msg, msg
-    assert "downsample" in msg, "the message should say how to fix it."
+    assert "57709 points" in msg
+    # 57709^2 * 1.0e-8 s ~= 33 s, reported in seconds below the 90 s cutoff
+    assert "33 seconds" in msg, msg
+    assert "downsample" in msg, "the message should say how to cut it down."
+
+    # and the units switch over rather than reporting "600 seconds"
+    big = app.slow_window_message(200_000, 1)
+    assert "minutes" in big, big
+
+
+def test_slow_window_warning_is_not_a_gate(app):
+    """A warning that still blocks the build is just an error with softer
+    wording. The build path must not consult it as a condition."""
+    src = Path(APP_PATH).read_text(encoding="utf-8")
+    assert "elif slow" not in src and "if slow:\n                st.error" not in src, \
+        "the size warning must not gate the build."
+    assert "st.warning(slow)" in src, "it should surface as a warning."
 
 
 def test_invalid_max_dist_text_is_reported_not_crashed():

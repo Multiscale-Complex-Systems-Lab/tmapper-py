@@ -62,12 +62,19 @@ Only numeric columns are offered as build variables. A leading unnamed column
 `index=False` — is dropped automatically, since it is just a monotonic ramp
 and would dominate the distance computation if selected.
 
-!!! warning "The bundled CSV is the full historical record"
-    `EL_temp.csv` holds 57 709 daily rows. The pipeline builds a full pairwise
-    distance matrix, which is O(N²) — at that size roughly **27 GB**. The
-    sample button therefore trims to a recent slice, and the app refuses any
-    row range large enough to be a problem, telling you the figure and how to
-    fix it. Restrict the row range or turn on downsampling.
+!!! note "The bundled CSV is the full historical record"
+    `EL_temp.csv` holds 57 709 daily rows, and the sample button trims to a
+    recent slice so the default click stays fast.
+
+    The whole file does build. The app uses `tknndigraph`'s `low_memory` path,
+    which scans the coordinates a block of rows at a time rather than
+    allocating the ~27 GB pairwise distance matrix N² would imply — so what
+    limits a long recording is **time**, not memory. Every pair is still
+    compared, so that time grows quadratically: measured on this dataset,
+    ~2.6 s at 16 000 points, ~10 s at 32 000, and ~32 s for all 57 709.
+
+    Above 16 000 points the app warns with a rough estimate and builds it
+    anyway. Restrict the row range or turn on downsampling to cut the wait.
 
 ### Variables & Preprocessing
 
